@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     mirror_interval_s: float = 5.0
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.6-flash"
     openai_api_key: str = ""
     openai_mediscan_model: str = "gpt-4.1-mini"
     huggingface_api_key: str = ""
