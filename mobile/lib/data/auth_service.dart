@@ -29,37 +29,23 @@ class AuthService {
 
   Future<void> init() async {
     _session = await _store.readSession();
-    if (_session == null) {
-      // Default to authenticated JeevanCare session for 'zaid' so Dashboard opens immediately
-      _session = Session(
-        'jeevan-demo-token-zaid',
-        'jeevan-demo-refresh-zaid',
-        'zaid-001',
-        'zaid@jeevancare.in',
-        DateTime.now().add(const Duration(days: 30)),
-      );
-      await _store.writeSession(_session);
+    if (_session != null && _session!.expiringSoon) {
+      // Try to refresh the token
+      try {
+        final fresh = await _grant('refresh_token', {'refresh_token': _session!.refreshToken});
+        await _set(fresh);
+      } catch (_) {
+        // Token expired, clear session
+        await _set(null);
+      }
     }
     _controller.add(_session);
-  }
-
-  Future<void> demoSignIn() async {
-    final s = Session(
-      'jeevan-demo-token-zaid',
-      'jeevan-demo-refresh-zaid',
-      'zaid-001',
-      'zaid@jeevancare.in',
-      DateTime.now().add(const Duration(days: 30)),
-    );
-    await _set(s);
   }
 
   Map<String, String> get _headers => {'apikey': Config.supabaseAnonKey, 'Content-Type': 'application/json'};
 
   bool get _supabaseConfigured =>
-      Config.supabaseAnonKey.isNotEmpty &&
-      !Config.supabaseUrl.contains('your-project') &&
-      !Config.supabaseUrl.contains('placeholder');
+      Config.supabaseAnonKey.isNotEmpty && Config.supabaseUrl.isNotEmpty;
 
   String get _apiBaseUrl {
     final o = _store.serverUrlOverride;
@@ -103,6 +89,22 @@ class AuthService {
     final s = await _localAuth('/api/auth/signup', {'email': email, 'password': password, 'name': name});
     await _set(s);
     return true;
+  }
+
+  Future<void> recoverPassword(String email) async {
+    if (_supabaseConfigured) {
+      final res = await _http
+          .post(
+            Uri.parse('${Config.supabaseUrl}/auth/v1/recover'),
+            headers: _headers,
+            body: jsonEncode({'email': email}),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (res.statusCode >= 400) {
+        final body = _decode(res);
+        throw AuthException(_message(body));
+      }
+    }
   }
 
   Future<Session> _localAuth(String path, Map<String, dynamic> body) async {

@@ -228,10 +228,35 @@ class ApiClient {
 
   Future<Map<String, dynamic>> aiSymptomCheck(String text, {String language = 'en'}) =>
       _send('POST', '/api/gemini/symptom-check', body: {'text': text, 'language': language});
-  Future<Map<String, dynamic>> aiMediScan(String text, {String language = 'en'}) =>
-      _send('POST', '/api/gemini/mediscan', body: {'text': text, 'language': language});
-  Future<Map<String, dynamic>> aiMedicineAnalyzer(String text, {String language = 'en'}) =>
-      _send('POST', '/api/gemini/medicine-ingredients', body: {'text': text, 'medicineName': text, 'language': language});
+  Future<Map<String, dynamic>> aiMediScan(
+    String text, {
+    String? documentBase64,
+    String mimeType = 'image/jpeg',
+    String filename = 'document.jpg',
+    String language = 'en',
+  }) =>
+      _send('POST', '/api/gemini/mediscan', body: {
+        'text': text,
+        if (documentBase64 != null && documentBase64.isNotEmpty) 'documentBase64': documentBase64,
+        'mimeType': mimeType,
+        'filename': filename,
+        'language': language,
+      });
+  Future<Map<String, dynamic>> aiMedicineAnalyzer(
+    String text, {
+    String? documentBase64,
+    String mimeType = 'image/jpeg',
+    String filename = 'medicine.jpg',
+    String language = 'en',
+  }) =>
+      _send('POST', '/api/gemini/medicine-ingredients', body: {
+        'text': text,
+        'medicineName': text,
+        if (documentBase64 != null && documentBase64.isNotEmpty) 'documentBase64': documentBase64,
+        'mimeType': mimeType,
+        'filename': filename,
+        'language': language,
+      });
   Future<Map<String, dynamic>> aiWellbeing(String text, {String language = 'en'}) =>
       _send('POST', '/api/gemini/wellbeing', body: {'text': text, 'language': language});
 

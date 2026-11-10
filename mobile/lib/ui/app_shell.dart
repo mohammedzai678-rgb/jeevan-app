@@ -316,10 +316,10 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
     final store = ref.watch(storeProvider);
     final session = ref.watch(authProvider).session;
     final emailName = session?.email?.split('@').first.trim() ?? '';
-    final name = store.patientName.isNotEmpty
+    final name = store.patientName.isNotEmpty && store.patientName != 'User'
         ? store.patientName
-        : (emailName.isNotEmpty ? emailName : 'zaid');
-    final initial = name[0].toUpperCase();
+        : (emailName.isNotEmpty ? emailName : 'User');
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : 'U';
 
     return Scaffold(
       key: _scaffoldKey,
@@ -334,7 +334,7 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // User Header ('Z' + 'zaid' + 'A+')
+              // User Header
               InkWell(
                 onTap: () {
                   Navigator.of(context).pop();

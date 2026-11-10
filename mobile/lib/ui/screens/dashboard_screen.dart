@@ -7,8 +7,8 @@ import '../../state/providers.dart';
 import '../widgets/common.dart';
 import '../widgets/emergency_qr_card.dart';
 
-/// Home: greeting, the Emergency QR hero, a six-tile overview and three quick actions.
-class DashboardScreen extends ConsumerWidget {
+/// Home: greeting, the Emergency QR hero, live Supabase stats overview and three quick actions.
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({
     super.key,
     this.onOpenDevices,
@@ -18,6 +18,42 @@ class DashboardScreen extends ConsumerWidget {
   final VoidCallback? onOpenDevices;
   final void Function(String route, {int subTab})? onNavigate;
 
+  @override
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<DashboardScreen> {
+  int _docCount = 0;
+  int _alertCount = 0;
+  bool _loadingCounts = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchLiveCounts();
+  }
+
+  Future<void> _fetchLiveCounts() async {
+    final userId = ref.read(authProvider).session?.userId ?? '';
+    if (userId.isEmpty) return;
+    setState(() => _loadingCounts = true);
+    try {
+      final sb = ref.read(supabaseProvider);
+      final docsFuture = sb.fetchDocuments(userId).catchError((_) => <Map<String, dynamic>>[]);
+      final alertsFuture = sb.fetchAlerts(userId).catchError((_) => <Map<String, dynamic>>[]);
+      final results = await Future.wait([docsFuture, alertsFuture]);
+      if (mounted) {
+        setState(() {
+          _docCount = results[0].length;
+          _alertCount = results[1].length;
+          _loadingCounts = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingCounts = false);
+    }
+  }
+
   String _greeting() {
     final h = DateTime.now().hour;
     if (h < 12) return 'Good morning';
@@ -25,146 +61,154 @@ class DashboardScreen extends ConsumerWidget {
     return 'Good evening';
   }
 
-  void _go(String route, {int subTab = 0}) => onNavigate?.call(route, subTab: subTab);
+  void _go(String route, {int subTab = 0}) => widget.onNavigate?.call(route, subTab: subTab);
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final dateStr = DateFormat('EEEE, d MMMM').format(DateTime.now());
     final store = ref.watch(storeProvider);
+    final session = ref.watch(sessionProvider).valueOrNull;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-      children: [
-        // Greeting
-        Text(
-          '${_greeting()} 👋',
-          style: const TextStyle(
-            color: Palette.textDim,
-            fontSize: 14.5,
-            fontWeight: FontWeight.w600,
+    final displayName = session?.email != null && session!.email!.isNotEmpty
+        ? (store.patientName != 'User' ? store.patientName : session.email!.split('@').first)
+        : store.patientName;
+
+    return RefreshIndicator(
+      onRefresh: _fetchLiveCounts,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+        children: [
+          // Greeting
+          Text(
+            '${_greeting()} 👋',
+            style: const TextStyle(
+              color: Palette.textDim,
+              fontSize: 14.5,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          store.patientName,
-          style: const TextStyle(
-            color: Palette.text,
-            fontSize: 32,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -1,
-            height: 1.1,
+          const SizedBox(height: 2),
+          Text(
+            displayName,
+            style: const TextStyle(
+              color: Palette.text,
+              fontSize: 32,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -1,
+              height: 1.1,
+            ),
           ),
-        ),
-        const SizedBox(height: 2),
-        Text(
-          dateStr,
-          style: const TextStyle(color: Palette.textMuted, fontSize: 13, fontWeight: FontWeight.w500),
-        ),
-        const SizedBox(height: 20),
+          const SizedBox(height: 2),
+          Text(
+            dateStr,
+            style: const TextStyle(color: Palette.textMuted, fontSize: 13, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(height: 20),
 
-        // Hero: always-visible Emergency QR
-        EmergencyQrCard(
-          hero: true,
-          patientName: store.patientName,
-          bloodGroup: store.bloodGroup,
-          allergies: store.allergies.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-          conditions: store.conditions.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-          medications: store.medications.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-          emergencyContactName: store.contactName,
-          emergencyContactRelation: store.contactRelation,
-          emergencyContactPhone: store.contactPhone,
-        ),
-        const SizedBox(height: 28),
+          // Hero: always-visible Emergency QR with live Supabase user data
+          EmergencyQrCard(
+            hero: true,
+            patientName: displayName,
+            bloodGroup: store.bloodGroup,
+            allergies: store.allergies.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty && e != 'None reported').toList(),
+            conditions: store.conditions.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty && e != 'None reported').toList(),
+            medications: store.medications.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty && e != 'None').toList(),
+            emergencyContactName: store.contactName,
+            emergencyContactRelation: store.contactRelation,
+            emergencyContactPhone: store.contactPhone,
+          ),
+          const SizedBox(height: 28),
 
-        // Overview
-        const SectionHeader('Overview'),
-        GridView.count(
-          crossAxisCount: 2,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: 1.5,
-          children: [
-            _StatTile(
-              icon: Icons.groups_rounded,
-              color: Palette.purple,
-              value: '1',
-              label: 'Contacts',
-              onTap: () => _go('profile', subTab: 1),
-            ),
-            _StatTile(
-              icon: Icons.folder_copy_rounded,
-              color: Palette.blue,
-              value: '9',
-              label: 'Documents',
-              onTap: () => _go('health-vault'),
-            ),
-            _StatTile(
-              icon: Icons.medication_rounded,
-              color: Palette.amber,
-              value: '0%',
-              label: 'Adherence',
-              onTap: () => _go('medications'),
-            ),
-            _StatTile(
-              icon: Icons.local_hospital_rounded,
-              color: Palette.teal,
-              value: '10,000+',
-              label: 'Hospitals',
-              onTap: () => _go('emergency-services', subTab: 0),
-            ),
-            _StatTile(
-              icon: Icons.bloodtype_rounded,
-              color: Palette.red,
-              value: '20+',
-              label: 'Blood banks',
-              onTap: () => _go('emergency-services', subTab: 1),
-            ),
-            _StatTile(
-              icon: Icons.campaign_rounded,
-              color: Palette.orange,
-              value: '5',
-              label: 'Alerts nearby',
-              onTap: () => _go('community'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 28),
-
-        // Quick actions
-        const SectionHeader('Quick actions'),
-        GlassCard(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Column(
+          // Overview (Live Supabase counts)
+          const SectionHeader('Overview'),
+          GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 1.5,
             children: [
-              _ActionRow(
-                icon: Icons.sos_rounded,
-                color: Palette.red,
-                title: 'Run an SOS test',
-                subtitle: 'Check location and alerts',
-                onTap: () => _go('sos'),
+              _StatTile(
+                icon: Icons.groups_rounded,
+                color: Palette.purple,
+                value: store.contactPhone.isNotEmpty ? '1' : '0',
+                label: 'Contacts',
+                onTap: () => _go('profile', subTab: 1),
               ),
-              const Divider(indent: 72, endIndent: 16),
-              _ActionRow(
+              _StatTile(
+                icon: Icons.folder_copy_rounded,
+                color: Palette.blue,
+                value: '$_docCount',
+                label: 'Documents',
+                onTap: () => _go('health-vault'),
+              ),
+              _StatTile(
+                icon: Icons.medication_rounded,
+                color: Palette.amber,
+                value: 'Active',
+                label: 'Medications',
+                onTap: () => _go('medications'),
+              ),
+              _StatTile(
                 icon: Icons.local_hospital_rounded,
                 color: Palette.teal,
-                title: 'Find hospitals',
-                subtitle: 'Emergency care near you',
+                value: 'Nearby',
+                label: 'Hospitals',
                 onTap: () => _go('emergency-services', subTab: 0),
               ),
-              const Divider(indent: 72, endIndent: 16),
-              _ActionRow(
-                icon: Icons.volunteer_activism_rounded,
-                color: Palette.blue,
-                title: 'Connect with an NGO',
-                subtitle: 'Relief and medical aid',
-                onTap: () => _go('emergency-services', subTab: 3),
+              _StatTile(
+                icon: Icons.bloodtype_rounded,
+                color: Palette.red,
+                value: '24×7',
+                label: 'Blood banks',
+                onTap: () => _go('emergency-services', subTab: 1),
+              ),
+              _StatTile(
+                icon: Icons.campaign_rounded,
+                color: Palette.orange,
+                value: '$_alertCount',
+                label: 'Community alerts',
+                onTap: () => _go('community'),
               ),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 28),
+
+          // Quick actions
+          const SectionHeader('Quick actions'),
+          GlassCard(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Column(
+              children: [
+                _ActionRow(
+                  icon: Icons.sos_rounded,
+                  color: Palette.red,
+                  title: 'Run an SOS test',
+                  subtitle: 'Check location and alerts',
+                  onTap: () => _go('sos'),
+                ),
+                const Divider(indent: 72, endIndent: 16),
+                _ActionRow(
+                  icon: Icons.local_hospital_rounded,
+                  color: Palette.teal,
+                  title: 'Find hospitals',
+                  subtitle: 'Emergency care near you',
+                  onTap: () => _go('emergency-services', subTab: 0),
+                ),
+                const Divider(indent: 72, endIndent: 16),
+                _ActionRow(
+                  icon: Icons.volunteer_activism_rounded,
+                  color: Palette.blue,
+                  title: 'Connect with an NGO',
+                  subtitle: 'Relief and medical aid',
+                  onTap: () => _go('emergency-services', subTab: 3),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

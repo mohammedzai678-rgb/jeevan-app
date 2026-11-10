@@ -20,6 +20,9 @@ mobile/.packages
 mobile/.idea/
 *.apk
 *.aab
+**/local.properties
+**/.gradle/
+**/gradle-daemon-jvm.properties
 
 # OS / editor noise
 .DS_Store

@@ -16,12 +16,14 @@ import '../data/ble_service.dart';
 import '../data/live_service.dart';
 import '../data/models.dart';
 import '../data/secure_store.dart';
+import '../data/supabase_service.dart';
 import '../data/sse.dart';
 
 // ── Services (singletons). storeProvider is overridden in main() after async init. ─────────────
 final storeProvider = Provider<SecureStore>((_) => throw UnimplementedError('override in main'));
 final authProvider = Provider<AuthService>((ref) => AuthService(ref.watch(storeProvider)));
 final apiProvider = Provider<ApiClient>((ref) => ApiClient(ref.watch(authProvider), ref.watch(storeProvider)));
+final supabaseProvider = Provider<SupabaseService>((ref) => SupabaseService(ref.watch(authProvider)));
 final liveProvider = Provider<LiveService>((ref) => LiveService(ref.watch(apiProvider), ref.watch(authProvider)));
 final bleProvider = Provider<BleService>((ref) => BleService(ref.watch(storeProvider)));
 
@@ -336,7 +338,7 @@ class SosController extends StateNotifier<SosState> {
 
   String formatSosMessage({double? lat, double? lng, String? roomOverride}) {
     final store = _ref.read(storeProvider);
-    final uid = _ref.read(authProvider).session?.userId ?? 'zaid-001';
+    final uid = _ref.read(authProvider).session?.userId ?? 'patient-user';
     final resolvedLat = lat ?? state.event?.lat ?? 12.9716;
     final resolvedLng = lng ?? state.event?.lng ?? 77.5946;
     final resolvedRoom = (roomOverride != null && roomOverride.isNotEmpty) ? roomOverride : state.roomId;

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config.dart';
@@ -70,6 +70,61 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  
+  Future<void> _openForgotPasswordDialog() async {
+    final emailCtrl = TextEditingController(text: _emailCtrl.text.trim());
+    bool sending = false;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: Palette.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+            side: const BorderSide(color: Palette.outline),
+          ),
+          title: const Text('Reset Password', style: TextStyle(color: Palette.text, fontWeight: FontWeight.w700)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Enter your registered email address to receive password recovery instructions.', style: TextStyle(color: Palette.textDim, fontSize: 13)),
+              const SizedBox(height: 14),
+              TextField(
+                controller: emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.mail_outline_rounded)),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: sending ? null : () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: sending ? null : () async {
+                final email = emailCtrl.text.trim();
+                if (email.isEmpty || !email.contains('@')) {
+                  showSnack(ctx, 'Please enter a valid email address.', error: true);
+                  return;
+                }
+                setDialogState(() => sending = true);
+                try {
+                  await ref.read(authProvider).recoverPassword(email);
+                  if (ctx.mounted) Navigator.of(ctx).pop();
+                  if (mounted) showSnack(context, 'Password reset link sent to $email!');
+                } catch (e) {
+                  if (ctx.mounted) showSnack(ctx, 'Error: $e', error: true);
+                } finally {
+                  if (ctx.mounted) setDialogState(() => sending = false);
+                }
+              },
+              child: sending ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Send Reset Link'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _openServerDialog() async {
@@ -326,7 +381,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 ),
                               ),
                             ),
-                            const SizedBox(height: Gap.lg),
+                            if (!_signUp) ...[
+                              const SizedBox(height: 4),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: TextButton(
+                                  style: TextButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    foregroundColor: Palette.red,
+                                  ),
+                                  onPressed: _openForgotPasswordDialog,
+                                  child: const Text('Forgot password?', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: Gap.md),
                             FilledButton(
                               onPressed: _busy ? null : _submit,
                               child: _busy
@@ -338,18 +407,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   : Text(_signUp ? 'Create account' : 'Sign in'),
                             ),
                             const SizedBox(height: Gap.xs),
-                            TextButton(
-                              style: TextButton.styleFrom(
-                                foregroundColor: Palette.textDim,
-                                minimumSize: const Size.fromHeight(44),
-                              ),
-                              onPressed: _busy
-                                  ? null
-                                  : () async {
-                                      await ref.read(authProvider).demoSignIn();
-                                    },
-                              child: const Text('Continue as demo user'),
-                            ),
+
                           ],
                         ),
                       ),

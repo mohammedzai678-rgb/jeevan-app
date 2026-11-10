@@ -39,36 +39,36 @@ class SecureStore {
   String? get lastDeviceId => _prefs.getString('device_id');
   Future<void> setLastDeviceId(String? v) async => v == null ? _prefs.remove('device_id') : _prefs.setString('device_id', v);
 
-  String get patientName => _prefs.getString('patient_name') ?? 'zaid';
-  Future<void> setPatientName(String v) => _prefs.setString('patient_name', v.trim().isEmpty ? 'zaid' : v.trim());
+  String get patientName => _prefs.getString('patient_name') ?? 'User';
+  Future<void> setPatientName(String v) => _prefs.setString('patient_name', v.trim().isEmpty ? 'User' : v.trim());
 
-  String get bloodGroup => _prefs.getString('blood_group') ?? 'A+';
-  Future<void> setBloodGroup(String v) => _prefs.setString('blood_group', v.trim().isEmpty ? 'A+' : v.trim());
+  String get bloodGroup => _prefs.getString('blood_group') ?? 'Not specified';
+  Future<void> setBloodGroup(String v) => _prefs.setString('blood_group', v.trim().isEmpty ? 'Not specified' : v.trim());
 
-  String get allergies => _prefs.getString('med_allergies') ?? 'Penicillin, Sulfa Drugs';
+  String get allergies => _prefs.getString('med_allergies') ?? 'None reported';
   Future<void> setAllergies(String v) =>
       _prefs.setString('med_allergies', v.trim().isEmpty ? 'None reported' : v.trim());
 
-  String get conditions => _prefs.getString('med_conditions') ?? 'Mild Asthma';
+  String get conditions => _prefs.getString('med_conditions') ?? 'None reported';
   Future<void> setConditions(String v) =>
       _prefs.setString('med_conditions', v.trim().isEmpty ? 'None reported' : v.trim());
 
-  String get medications => _prefs.getString('med_current') ?? 'Salbutamol Inhaler PRN';
+  String get medications => _prefs.getString('med_current') ?? 'None';
   Future<void> setMedications(String v) =>
       _prefs.setString('med_current', v.trim().isEmpty ? 'None' : v.trim());
 
   String get medicalDetailsSummary =>
       'Allergies: $allergies | Conditions: $conditions | Medications: $medications';
 
-  String get contactName => _prefs.getString('ice_name') ?? 'Family Emergency Contact';
-  Future<void> setContactName(String v) => _prefs.setString('ice_name', v.trim().isEmpty ? 'Family Emergency Contact' : v.trim());
+  String get contactName => _prefs.getString('ice_name') ?? 'Emergency Contact';
+  Future<void> setContactName(String v) => _prefs.setString('ice_name', v.trim().isEmpty ? 'Emergency Contact' : v.trim());
 
-  String get contactRelation => _prefs.getString('ice_relation') ?? 'Parent / Guardian';
-  Future<void> setContactRelation(String v) => _prefs.setString('ice_relation', v.trim().isEmpty ? 'Parent / Guardian' : v.trim());
+  String get contactRelation => _prefs.getString('ice_relation') ?? 'Family';
+  Future<void> setContactRelation(String v) => _prefs.setString('ice_relation', v.trim().isEmpty ? 'Family' : v.trim());
 
-  String get contactPhone => _prefs.getString('ice_phone') ?? '+91 98765 43210';
-  Future<void> setContactPhone(String v) => _prefs.setString('ice_phone', v.trim().isEmpty ? '+91 98765 43210' : v.trim());
+  String get contactPhone => _prefs.getString('ice_phone') ?? '';
+  Future<void> setContactPhone(String v) => _prefs.setString('ice_phone', v.trim());
 
-  String get contactEmail => _prefs.getString('ice_email') ?? 'family@jeevancare.in';
-  Future<void> setContactEmail(String v) => _prefs.setString('ice_email', v.trim().isEmpty ? 'family@jeevancare.in' : v.trim());
+  String get contactEmail => _prefs.getString('ice_email') ?? '';
+  Future<void> setContactEmail(String v) => _prefs.setString('ice_email', v.trim());
 }
