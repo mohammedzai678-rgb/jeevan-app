@@ -125,7 +125,10 @@ class AuthService {
 
   /// Google Sign-In: gets an ID token from Google, sends it to our server for verification & session creation.
   Future<void> signInWithGoogle() async {
-    final googleSignIn = GoogleSignIn(scopes: ['email', 'profile']);
+    final googleSignIn = GoogleSignIn(
+      serverClientId: Config.googleServerClientId.isNotEmpty ? Config.googleServerClientId : null,
+      scopes: ['email', 'profile'],
+    );
     final account = await googleSignIn.signIn();
     if (account == null) throw AuthException('Google sign-in cancelled');
 

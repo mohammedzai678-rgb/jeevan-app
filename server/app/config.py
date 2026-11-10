@@ -28,6 +28,7 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.6-flash"
+    google_client_id: str = ""
     openai_api_key: str = ""
     openai_mediscan_model: str = "gpt-4.1-mini"
     huggingface_api_key: str = ""

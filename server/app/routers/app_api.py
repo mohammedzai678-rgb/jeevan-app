@@ -98,8 +98,17 @@ async def google_auth(body: GoogleAuthBody, request: Request) -> dict[str, Any]:
     email = info.get("email")
     if not email:
         raise HTTPException(401, "Google token has no email")
-    if info.get("email_verified") != "true":
+    if str(info.get("email_verified", "")).lower() not in ("true", "1"):
         raise HTTPException(401, "Google email not verified")
+
+    # Validate audience (aud) against our configured client ID if set
+    settings = _req_settings(request)
+    if settings.google_client_id:
+        aud = info.get("aud", "")
+        # aud may be a string or list
+        aud_list = aud if isinstance(aud, list) else [aud]
+        if settings.google_client_id not in aud_list:
+            raise HTTPException(401, "Google token audience mismatch")
 
     name = info.get("name") or info.get("given_name") or email.split("@")[0]
     return _issue_local_session(request, email, name)

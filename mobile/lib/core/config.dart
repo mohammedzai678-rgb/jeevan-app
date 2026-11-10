@@ -27,4 +27,8 @@ class Config {
   static const bleVitalsChar = '4a455645-0002-4c2b-9d3a-5a65657600a1';
   static const bleCommandChar = '4a455645-0003-4c2b-9d3a-5a65657600a1';
   static const bleEventChar = '4a455645-0004-4c2b-9d3a-5a65657600a1';
+
+  static const googleServerClientId = String.fromEnvironment('GOOGLE_SERVER_CLIENT_ID');
+
+  static const googleAndroidClientId = String.fromEnvironment('GOOGLE_ANDROID_CLIENT_ID');
 }
