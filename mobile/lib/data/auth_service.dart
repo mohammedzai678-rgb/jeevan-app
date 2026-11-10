@@ -123,10 +123,14 @@ class AuthService {
 
   Future<void> signOut() => _set(null);
 
-  /// Google Sign-In: gets an ID token from Google, sends it to our server for verification & session creation.
+  /// Google Sign-In: gets tokens from Google, supports both Supabase and FastAPI local sessions.
   Future<void> signInWithGoogle() async {
+    final serverClientId = Config.googleServerClientId.isNotEmpty
+        ? Config.googleServerClientId
+        : null;
+
     final googleSignIn = GoogleSignIn(
-      serverClientId: Config.googleServerClientId.isNotEmpty ? Config.googleServerClientId : null,
+      serverClientId: serverClientId,
       scopes: ['email', 'profile'],
     );
     final account = await googleSignIn.signIn();
@@ -134,10 +138,14 @@ class AuthService {
 
     final googleAuth = await account.authentication;
     final idToken = googleAuth.idToken;
-    if (idToken == null) throw AuthException('Failed to get Google ID token');
+    final accessToken = googleAuth.accessToken;
 
-    // First try Supabase Google OAuth if configured
-    if (_supabaseConfigured) {
+    if (idToken == null && accessToken == null) {
+      throw AuthException('Failed to get Google credentials');
+    }
+
+    // 1. Try Supabase Google OAuth if configured and idToken is available
+    if (_supabaseConfigured && idToken != null && idToken.isNotEmpty) {
       try {
         final res = await _http
             .post(
@@ -158,8 +166,13 @@ class AuthService {
       }
     }
 
-    // Fallback: send Google ID token to our FastAPI backend
-    final s = await _localAuth('/api/auth/google', {'id_token': idToken});
+    // 2. Fallback: send available token to our FastAPI backend
+    final s = await _localAuth('/api/auth/google', {
+      if (idToken != null) 'id_token': idToken,
+      if (accessToken != null) 'access_token': accessToken,
+      'email': account.email,
+      'name': account.displayName,
+    });
     await _set(s);
   }
 
