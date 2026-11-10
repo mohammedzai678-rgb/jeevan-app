@@ -699,7 +699,8 @@ async def notifications_video_call_invite(request: Request, user: User = Depends
     return {
         "success": True,
         "roomId": sanitized_room_id,
-        "videoLink": f"{ctx.settings.app_public_url.rstrip('/')}/video-call?room={sanitized_room_id}",
+        "videoLink": f"/video-call?roomId={sanitized_room_id}",
+        "videoUrl": f"{ctx.settings.app_public_url.rstrip('/')}/video-call?room={sanitized_room_id}",
         "results": results,
     }
 
