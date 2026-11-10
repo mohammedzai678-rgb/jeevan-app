@@ -28,7 +28,9 @@ class LocalAuthBody(BaseModel):
 def _issue_local_session(request: Request, email: str, name: str | None = None) -> dict[str, Any]:
     ctx = get_ctx(request)
     settings = _req_settings(request)
-    secret = settings.supabase_jwt_secret or "jeevan-local-dev-jwt-secret-key-2026-32bytes"
+    secret = settings.supabase_jwt_secret
+    if not secret:
+        raise HTTPException(503, "SUPABASE_JWT_SECRET is not configured for local token issuance")
     clean_email = email.strip().lower()
     uid = "u_" + hashlib.sha256(clean_email.encode()).hexdigest()[:16]
     now = int(time.time())

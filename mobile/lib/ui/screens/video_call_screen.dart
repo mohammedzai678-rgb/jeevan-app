@@ -76,18 +76,10 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
         _session = session;
         _loading = false;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _session = RtcSession(
-          channelId: widget.channelId,
-          appId: 'a265f2bb88124e2b99044931d219655c',
-          token: '007eJxTYJj48G2f+cK3K1Z8F3J2Y2B48F7J9K2L',
-          uid: '108',
-          role: 'publisher',
-          expiresAt: DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/ 1000,
-        );
-        _error = null;
+        _error = e.toString();
         _loading = false;
       });
     }

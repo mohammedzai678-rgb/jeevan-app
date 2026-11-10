@@ -22,7 +22,7 @@ from .notify import Notifier
 from .persistence import Persistence
 from .rag.index import HybridIndex
 from .rag.models import Embedder, Reranker
-from .routers import app_api, assistant, device, ecosystem, rtc, stick, tomtom
+from .routers import app_api, assistant, device, ecosystem, rtc, stick, tomtom, web_pages
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("jeevan")
@@ -84,6 +84,7 @@ def create_app(settings: Settings | None = None, index: HybridIndex | None = Non
     app.include_router(tomtom.router)
     app.include_router(stick.router)
     app.include_router(ecosystem.router)
+    app.include_router(web_pages.router)
 
     @app.get("/health")
     async def health() -> dict:

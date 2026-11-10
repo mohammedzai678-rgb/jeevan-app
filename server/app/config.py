@@ -13,9 +13,9 @@ class Settings(BaseSettings):
 
     supabase_url: str = ""
     supabase_service_role_key: str = ""
-    supabase_jwt_secret: str = "jeevan-local-dev-jwt-secret-key-2026-32bytes"
+    supabase_jwt_secret: str = ""
 
-    device_api_key: str = "jeevan_esp32_prod_2026"
+    device_api_key: str = ""
     sensor_sequence: str = "read_max30102:15,read_dht11:4,read_ad8232:6"
     default_owner_user_id: str = ""
     legacy_unauth_reminder_ack: bool = True
@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     brevo_whatsapp_safe_template_id: str = ""
     brevo_whatsapp_video_invite_template_id: str = ""
     brevo_whatsapp_medication_template_id: str = ""
-    app_public_url: str = Field(default="https://jeevan-frontend-one.vercel.app")
+    fast2sms_api_key: str = ""
+    app_public_url: str = Field(default="https://jeevan-app-backend-production.up.railway.app")
 
     tomtom_api_key: str = ""
     openweather_key: str = ""

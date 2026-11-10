@@ -1,21 +1,21 @@
-/// Build-time configuration. Override with --dart-define, e.g.
-///   flutter run --dart-define=API_BASE_URL=http://192.168.1.20:8000 \
-///               --dart-define=SUPABASE_URL=https://xyz.supabase.co \
-///               --dart-define=SUPABASE_ANON_KEY=eyJ...
+/// Build-time configuration. Inject secrets/config via --dart-define-from-file=.env
+/// (never hardcode API keys or credentials in source control).
 /// The Supabase *anon* key is public by design (RLS protects data). NEVER put the service-role key in the app.
 class Config {
-  static const apiBaseUrl =
-      String.fromEnvironment('API_BASE_URL', defaultValue: 'https://jeevan-app-backend-production.up.railway.app');
-  static const supabaseUrl =
-      String.fromEnvironment('SUPABASE_URL', defaultValue: 'https://your-project.supabase.co');
-  static const supabaseAnonKey =
-      String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: '');
+  static const apiBaseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://jeevan-app-backend-production.up.railway.app',
+  );
+  static const supabaseUrl = String.fromEnvironment('SUPABASE_URL', defaultValue: '');
+  static const supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY', defaultValue: '');
 
-  /// Public origin of the JeevanCare web app. The Emergency QR encodes
-  /// `<webBaseUrl>/emergency/<userId>` and SOS alerts include
-  /// `<webBaseUrl>/video-call?room=<roomId>` — identical to the website.
-  static const webBaseUrl =
-      String.fromEnvironment('WEB_BASE_URL', defaultValue: 'https://jeevan-frontend-one.vercel.app');
+  /// Public origin of the JeevanCare app server (hosted on Railway).
+  /// The Emergency QR encodes `<webBaseUrl>/emergency/<userId>` and SOS alerts include
+  /// `<webBaseUrl>/video-call?room=<roomId>`.
+  static const webBaseUrl = String.fromEnvironment(
+    'WEB_BASE_URL',
+    defaultValue: 'https://jeevan-app-backend-production.up.railway.app',
+  );
 
   static String videoCallUrl(String roomId) =>
       '${webBaseUrl.replaceAll(RegExp(r'/+$'), '')}/video-call?room=${Uri.encodeComponent(roomId)}';
