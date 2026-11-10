@@ -162,7 +162,20 @@ create policy "nearby_facilities_read" on public.nearby_facilities for select us
 drop policy if exists "nearby_facilities_write" on public.nearby_facilities;
 create policy "nearby_facilities_write" on public.nearby_facilities for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 
--- 9. STORAGE BUCKET FOR HEALTH VAULT FILES
+-- 9. DEVICE PAIRINGS (ESP32 Hardware link to User)
+create table if not exists public.device_pairings (
+  device_id text primary key,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  paired_at timestamptz not null default timezone('utc', now())
+);
+create index if not exists idx_device_pairings_user on public.device_pairings (user_id);
+alter table public.device_pairings enable row level security;
+drop policy if exists "device pairings owner select" on public.device_pairings;
+create policy "device pairings owner select" on public.device_pairings
+  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
+  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+
+-- 10. STORAGE BUCKET FOR HEALTH VAULT FILES
 insert into storage.buckets (id, name, public)
 values ('health-vault', 'health-vault', true)
 on conflict (id) do nothing;
