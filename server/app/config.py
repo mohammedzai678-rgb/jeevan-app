@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     brevo_whatsapp_safe_template_id: str = ""
     brevo_whatsapp_video_invite_template_id: str = ""
     brevo_whatsapp_medication_template_id: str = ""
-    fast2sms_api_key: str = ""
     app_public_url: str = Field(default="https://jeevan-app-backend-production.up.railway.app")
 
     tomtom_api_key: str = ""

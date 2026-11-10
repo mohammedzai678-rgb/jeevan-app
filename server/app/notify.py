@@ -75,15 +75,7 @@ class Notifier:
 
     @property
     def sms_ready(self) -> bool:
-        return self.brevo_sms_ready or self.fast2sms_ready
-
-    @property
-    def brevo_sms_ready(self) -> bool:
         return _is_configured(self.settings.brevo_api_key) and _is_configured(self.settings.brevo_sms_sender)
-
-    @property
-    def fast2sms_ready(self) -> bool:
-        return _is_configured(self.settings.fast2sms_api_key)
 
     @property
     def whatsapp_ready(self) -> bool:
@@ -144,31 +136,18 @@ class Notifier:
         return {"whatsapp": "failed", "whatsappError": res.get("error")}
 
     async def _send_sms(self, client: httpx.AsyncClient, *, phone: str, text: str) -> dict[str, Any]:
-        if self.brevo_sms_ready:
-            return await self._post(
-                client,
-                "/transactionalSMS/sms",
-                {
-                    "sender": self.settings.brevo_sms_sender,
-                    "recipient": phone,
-                    "content": text,
-                    "type": "transactional",
-                },
-            )
-        if self.fast2sms_ready:
-            local_num = phone[2:] if (len(phone) == 12 and phone.startswith("91")) else phone
-            try:
-                resp = await client.post(
-                    "https://www.fast2sms.com/dev/bulkV2",
-                    json={"route": "q", "message": text[:500], "flash": 0, "numbers": local_num},
-                    headers={"authorization": self.settings.fast2sms_api_key.strip(), "Content-Type": "application/json"},
-                )
-                if resp.status_code < 300:
-                    return {"status": "accepted", "provider": "fast2sms"}
-                return {"status": "failed", "provider": "fast2sms", "error": resp.text[:200]}
-            except httpx.HTTPError as exc:
-                return {"status": "failed", "provider": "fast2sms", "error": str(exc)}
-        return {"status": "skipped", "error": "No SMS provider configured"}
+        if not self.sms_ready:
+            return {"status": "skipped", "error": "Brevo SMS not configured"}
+        return await self._post(
+            client,
+            "/transactionalSMS/sms",
+            {
+                "sender": self.settings.brevo_sms_sender,
+                "recipient": phone,
+                "content": text,
+                "type": "transactional",
+            },
+        )
 
     async def send_sos(
         self,
