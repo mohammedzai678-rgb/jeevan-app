@@ -483,6 +483,95 @@ class ApiClient {
         'deviceId': deviceId,
       });
 
+  // ── Health Vault (routed through FastAPI — works with local auth) ──
+  Future<List<Map<String, dynamic>>> healthVaultDocuments() async {
+    final r = await _send('GET', '/api/health-vault/documents');
+    return ((r['documents'] as List?) ?? const []).whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
+  Future<Map<String, dynamic>> healthVaultUpload({
+    required String title,
+    required String category,
+    String? description,
+    String? documentDate,
+    String? doctorName,
+    String? hospitalName,
+    List<String>? tags,
+    String? fileUrl,
+    String? fileName,
+    int? fileSize,
+    String? fileType,
+  }) => _send('POST', '/api/health-vault/documents', body: {
+    'title': title,
+    'category': category,
+    if (description != null) 'description': description,
+    if (documentDate != null) 'document_date': documentDate,
+    if (doctorName != null) 'doctor_name': doctorName,
+    if (hospitalName != null) 'hospital_name': hospitalName,
+    if (tags != null) 'tags': tags,
+    if (fileUrl != null) 'file_url': fileUrl,
+    if (fileName != null) 'file_name': fileName,
+    if (fileSize != null) 'file_size': fileSize,
+    if (fileType != null) 'file_type': fileType,
+  });
+
+  Future<void> healthVaultDelete(String docId) => _send('DELETE', '/api/health-vault/documents/$docId');
+
+  Future<Map<String, dynamic>?> healthVaultSettings() async {
+    final r = await _send('GET', '/api/health-vault/settings');
+    return r['settings'] as Map<String, dynamic>?;
+  }
+
+  Future<void> healthVaultSetPassword(String hash) => _send('POST', '/api/health-vault/settings/password', body: {'vault_password_hash': hash});
+
+  Future<List<Map<String, dynamic>>> healthVaultContacts() async {
+    final r = await _send('GET', '/api/health-vault/contacts');
+    return ((r['contacts'] as List?) ?? const []).whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
+  Future<Map<String, dynamic>> healthVaultAddContact({required String name, required String phone, String relationship = 'Other', bool isPrimary = false}) =>
+      _send('POST', '/api/health-vault/contacts', body: {'name': name, 'phone': phone, 'relationship': relationship, 'is_primary': isPrimary});
+
+  Future<void> healthVaultDeleteContact(String contactId) => _send('DELETE', '/api/health-vault/contacts/$contactId');
+
+  Future<Map<String, dynamic>?> healthVaultProfile() async {
+    final r = await _send('GET', '/api/health-vault/profile');
+    return r['profile'] as Map<String, dynamic>?;
+  }
+
+  Future<void> healthVaultUpdateProfile(Map<String, dynamic> updates) => _send('PATCH', '/api/health-vault/profile', body: updates);
+
+  Future<List<Map<String, dynamic>>> healthVaultScans() async {
+    final r = await _send('GET', '/api/health-vault/scans');
+    return ((r['scans'] as List?) ?? const []).whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
+  Future<void> healthVaultDeleteScan(String scanId) => _send('DELETE', '/api/health-vault/scans/$scanId');
+
+  Future<List<Map<String, dynamic>>> healthVaultSymptomChecks() async {
+    final r = await _send('GET', '/api/health-vault/symptom-checks');
+    return ((r['checks'] as List?) ?? const []).whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> healthVaultAlerts() async {
+    final r = await _send('GET', '/api/health-vault/alerts');
+    return ((r['alerts'] as List?) ?? const []).whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+  }
+
+  Future<Map<String, dynamic>> healthVaultCreateAlert({
+    required String alertType,
+    required double latitude,
+    required double longitude,
+    String address = '',
+    String title = '',
+  }) => _send('POST', '/api/health-vault/alerts', body: {
+    'alert_type': alertType,
+    'latitude': latitude,
+    'longitude': longitude,
+    'address': address,
+    'title': title,
+  });
+
   /// Used by the assistant stream and connectivity probe.
   http.Client get raw => _http;
 

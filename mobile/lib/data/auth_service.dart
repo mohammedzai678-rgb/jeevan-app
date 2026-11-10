@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 
 import '../core/config.dart';
@@ -121,6 +122,43 @@ class AuthService {
   }
 
   Future<void> signOut() => _set(null);
+
+  /// Google Sign-In: gets an ID token from Google, sends it to our server for verification & session creation.
+  Future<void> signInWithGoogle() async {
+    final googleSignIn = GoogleSignIn(scopes: ['email', 'profile']);
+    final account = await googleSignIn.signIn();
+    if (account == null) throw AuthException('Google sign-in cancelled');
+
+    final googleAuth = await account.authentication;
+    final idToken = googleAuth.idToken;
+    if (idToken == null) throw AuthException('Failed to get Google ID token');
+
+    // First try Supabase Google OAuth if configured
+    if (_supabaseConfigured) {
+      try {
+        final res = await _http
+            .post(
+              Uri.parse('${Config.supabaseUrl}/auth/v1/token?grant_type=id_token'),
+              headers: _headers,
+              body: jsonEncode({'provider': 'google', 'id_token': idToken}),
+            )
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode < 400) {
+          final body = _decode(res);
+          if (body['access_token'] != null) {
+            await _set(_parse(body));
+            return;
+          }
+        }
+      } catch (_) {
+        // Fall through to FastAPI
+      }
+    }
+
+    // Fallback: send Google ID token to our FastAPI backend
+    final s = await _localAuth('/api/auth/google', {'id_token': idToken});
+    await _set(s);
+  }
 
   /// Always returns a token that is valid for at least a minute (refreshing if needed). Null if signed out.
   Future<String?> accessToken({bool force = false}) async {

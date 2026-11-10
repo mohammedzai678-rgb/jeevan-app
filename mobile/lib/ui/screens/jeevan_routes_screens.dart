@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -626,8 +626,8 @@ class _HealthVaultRouteScreenState extends ConsumerState<HealthVaultRouteScreen>
       return;
     }
     try {
-      final sb = ref.read(supabaseProvider);
-      final settings = await sb.getVaultSettings(_userId);
+      final api = ref.read(apiProvider);
+      final settings = await api.healthVaultSettings();
       _vaultPasswordHash = settings?['vault_password_hash'] as String?;
       if (_vaultPasswordHash == null || _vaultPasswordHash!.isEmpty) {
         _vaultLocked = false;
@@ -642,7 +642,7 @@ class _HealthVaultRouteScreenState extends ConsumerState<HealthVaultRouteScreen>
 
   Future<void> _fetchDocuments() async {
     try {
-      final docs = await ref.read(supabaseProvider).fetchDocuments(_userId);
+      final docs = await ref.read(apiProvider).healthVaultDocuments();
       if (mounted) setState(() => _records = docs);
     } catch (e) {
       if (mounted) showSnack(context, 'Error loading documents: $e', error: true);
@@ -683,7 +683,7 @@ class _HealthVaultRouteScreenState extends ConsumerState<HealthVaultRouteScreen>
               if (passCtrl.text != confirmCtrl.text) { showSnack(ctx, 'Passwords do not match', error: true); return; }
               final hash = _hashPassword(passCtrl.text);
               try {
-                await ref.read(supabaseProvider).setVaultPassword(_userId, hash);
+                await ref.read(apiProvider).healthVaultSetPassword(hash);
                 _vaultPasswordHash = hash;
                 _vaultLocked = false;
                 await _fetchDocuments();
@@ -871,8 +871,8 @@ class _HealthVaultRouteScreenState extends ConsumerState<HealthVaultRouteScreen>
                 if (title.isEmpty) { showSnack(ctx, 'Please enter a document title', error: true); return; }
                 setDialogState(() => uploading = true);
                 try {
-                  await ref.read(supabaseProvider).uploadDocument(
-                    userId: _userId, title: title, category: category,
+                  await ref.read(apiProvider).healthVaultUpload(
+                    title: title, category: category,
                     description: descCtrl.text.trim().isNotEmpty ? descCtrl.text.trim() : null,
                     doctorName: doctorCtrl.text.trim().isNotEmpty ? doctorCtrl.text.trim() : null,
                     hospitalName: hospitalCtrl.text.trim().isNotEmpty ? hospitalCtrl.text.trim() : null,
@@ -911,7 +911,7 @@ class _HealthVaultRouteScreenState extends ConsumerState<HealthVaultRouteScreen>
     );
     if (confirmed != true || !mounted) return;
     try {
-      await ref.read(supabaseProvider).deleteDocument('${doc['id']}');
+      await ref.read(apiProvider).healthVaultDelete('${doc['id']}');
       await _fetchDocuments();
       if (mounted) showSnack(context, 'Document deleted.');
     } catch (e) {
@@ -1176,11 +1176,14 @@ class _MediscanRouteScreenState extends ConsumerState<MediscanRouteScreen> {
     final userId = ref.read(authProvider).session?.userId ?? '';
     if (userId.isEmpty) return;
     try {
-      await ref.read(supabaseProvider).saveScanResult(
-        userId: userId,
-        scanType: scanType,
-        aiAnalysis: analysis,
-        confidenceScore: (analysis['confidenceScore'] as num?)?.toDouble() ?? 85.0,
+      await ref.read(apiProvider).raw.post(
+        ref.read(apiProvider).uri('/api/health-vault/scans'),
+        headers: await ref.read(apiProvider).headers(),
+        body: jsonEncode({
+          'scan_type': scanType,
+          'ai_analysis': analysis,
+          'confidence_score': (analysis['confidenceScore'] as num?)?.toDouble() ?? 85.0,
+        }),
       );
     } catch (_) {}
   }
@@ -2248,16 +2251,19 @@ class _SymptomCheckerRouteScreenState extends ConsumerState<SymptomCheckerRouteS
         final userId = ref.read(authProvider).session?.userId ?? '';
         if (userId.isNotEmpty) {
           try {
-            await ref.read(supabaseProvider).saveSymptomCheck(
-                  userId: userId,
-                  symptoms: {'list': _selectedSymptoms.toList()},
-                  bodyRegion: _selectedRegion,
-                  severity: '${_severity.round()}/10',
-                  duration: _duration,
-                  aiDiagnosis: res,
-                  urgencyLevel: (res['urgencyLevel']?.toString().toLowerCase().contains('emerg') ?? false)
-                      ? 'critical'
-                      : ((res['urgencyLevel']?.toString().toLowerCase().contains('urgent') ?? false) ? 'high' : 'medium'),
+            await ref.read(apiProvider).raw.post(
+                  ref.read(apiProvider).uri('/api/health-vault/symptom-checks'),
+                  headers: await ref.read(apiProvider).headers(),
+                  body: jsonEncode({
+                    'symptoms': {'list': _selectedSymptoms.toList()},
+                    'body_region': _selectedRegion,
+                    'severity': '${_severity.round()}/10',
+                    'duration': _duration,
+                    'ai_diagnosis': res,
+                    'urgency_level': (res['urgencyLevel']?.toString().toLowerCase().contains('emerg') ?? false)
+                        ? 'critical'
+                        : ((res['urgencyLevel']?.toString().toLowerCase().contains('urgent') ?? false) ? 'high' : 'medium'),
+                  }),
                 );
           } catch (_) {}
         }
@@ -2930,7 +2936,7 @@ class _CommunityRouteScreenState extends ConsumerState<CommunityRouteScreen> {
     final userId = ref.read(authProvider).session?.userId ?? '';
     if (userId.isNotEmpty) {
       try {
-        _alerts = await ref.read(supabaseProvider).fetchAlerts(userId);
+        _alerts = await ref.read(apiProvider).healthVaultAlerts();
       } catch (_) {
         _alerts = [];
       }
@@ -2972,7 +2978,7 @@ class _CommunityRouteScreenState extends ConsumerState<CommunityRouteScreen> {
                 lat = pos.latitude; lng = pos.longitude;
               } catch (_) {}
               try {
-                await ref.read(supabaseProvider).createAlert(userId: userId, alertType: category, latitude: lat, longitude: lng, address: descCtrl.text.trim());
+                await ref.read(apiProvider).healthVaultCreateAlert(alertType: category, latitude: lat, longitude: lng, address: descCtrl.text.trim(), title: titleCtrl.text.trim());
                 await _fetchAlerts();
               } catch (_) {}
               if (ctx.mounted) Navigator.of(ctx).pop();

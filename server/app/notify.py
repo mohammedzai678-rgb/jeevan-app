@@ -1,11 +1,14 @@
-"""SOS & Safe delivery over Brevo (WhatsApp + SMS + Email), run in the background after SOS is pushed to phones."""
+"""SOS & Safe delivery over Brevo (WhatsApp + SMS + Email), with SMTP fallback when Brevo is unconfigured. Run in the background after SOS is pushed to phones."""
 from __future__ import annotations
 
 import asyncio
 import html
 import logging
 import re
+import smtplib
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from typing import Any
 from urllib.parse import quote
 
@@ -71,7 +74,11 @@ class Notifier:
 
     @property
     def email_ready(self) -> bool:
-        return _is_configured(self.settings.brevo_api_key) and _is_configured(self.settings.brevo_from_email)
+        return (_is_configured(self.settings.brevo_api_key) and _is_configured(self.settings.brevo_from_email)) or self._smtp_configured
+
+    @property
+    def _smtp_configured(self) -> bool:
+        return bool(self.settings.smtp_host and self.settings.smtp_user and self.settings.smtp_password)
 
     @property
     def sms_ready(self) -> bool:
@@ -106,6 +113,33 @@ class Notifier:
                 return {"status": "accepted"}
             return {"status": "failed", "error": resp.text[:200]}
         except httpx.HTTPError as exc:
+            return {"status": "failed", "error": str(exc)}
+
+    async def _send_smtp(self, *, to_email: str, to_name: str, subject: str, html_body: str, text_body: str) -> dict[str, Any]:
+        """SMTP fallback when Brevo is not configured."""
+        if not self._smtp_configured:
+            return {"status": "skipped", "error": "SMTP not configured"}
+        try:
+            from_addr = self.settings.smtp_from_email or self.settings.smtp_user
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = f"{self.settings.brevo_from_name} <{from_addr}>"
+            msg["To"] = f"{to_name} <{to_email}>"
+            msg.attach(MIMEText(text_body, "plain", "utf-8"))
+            msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+            def _do_send() -> None:
+                with smtplib.SMTP(self.settings.smtp_host, self.settings.smtp_port, timeout=10) as s:
+                    s.ehlo()
+                    s.starttls()
+                    s.login(self.settings.smtp_user, self.settings.smtp_password)
+                    s.sendmail(from_addr, [to_email], msg.as_string())
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _do_send)
+            return {"status": "accepted"}
+        except Exception as exc:
+            log.warning("SMTP send to %s failed: %s", to_email, exc)
             return {"status": "failed", "error": str(exc)}
 
     async def _send_whatsapp(
@@ -212,15 +246,26 @@ class Notifier:
                         self._send_sms(client, phone=r["phone"], text=sms_text)
                     )
                 if r["email"] and self.email_ready:
-                    tasks[f"email:{r['email']}"] = asyncio.ensure_future(
-                        self._post(client, "/smtp/email", {
-                            "sender": {"email": self.settings.brevo_from_email, "name": self.settings.brevo_from_name},
-                            "to": [{"email": r["email"], "name": r["name"]}],
-                            "subject": f"🚨 SOS ALERT — {user_name} needs help NOW",
-                            "htmlContent": email_html,
-                            "textContent": sms_text,
-                        })
-                    )
+                    if _is_configured(self.settings.brevo_api_key) and _is_configured(self.settings.brevo_from_email):
+                        tasks[f"email:{r['email']}"] = asyncio.ensure_future(
+                            self._post(client, "/smtp/email", {
+                                "sender": {"email": self.settings.brevo_from_email, "name": self.settings.brevo_from_name},
+                                "to": [{"email": r["email"], "name": r["name"]}],
+                                "subject": f"🚨 SOS ALERT — {user_name} needs help NOW",
+                                "htmlContent": email_html,
+                                "textContent": sms_text,
+                            })
+                        )
+                    elif self._smtp_configured:
+                        tasks[f"email:{r['email']}"] = asyncio.ensure_future(
+                            self._send_smtp(
+                                to_email=r["email"],
+                                to_name=r["name"],
+                                subject=f"🚨 SOS ALERT — {user_name} needs help NOW",
+                                html_body=email_html,
+                                text_body=sms_text,
+                            )
+                        )
             for key, fut in tasks.items():
                 results[key] = await fut
         if not tasks:
@@ -283,15 +328,26 @@ class Notifier:
                         self._send_sms(client, phone=r["phone"], text=safe_text)
                     )
                 if r["email"] and self.email_ready:
-                    tasks[f"email:{r['email']}"] = asyncio.ensure_future(
-                        self._post(client, "/smtp/email", {
-                            "sender": {"email": self.settings.brevo_from_email, "name": self.settings.brevo_from_name},
-                            "to": [{"email": r["email"], "name": r["name"]}],
-                            "subject": f"✅ SAFE — {user_name} is now safe",
-                            "htmlContent": email_html,
-                            "textContent": safe_text,
-                        })
-                    )
+                    if _is_configured(self.settings.brevo_api_key) and _is_configured(self.settings.brevo_from_email):
+                        tasks[f"email:{r['email']}"] = asyncio.ensure_future(
+                            self._post(client, "/smtp/email", {
+                                "sender": {"email": self.settings.brevo_from_email, "name": self.settings.brevo_from_name},
+                                "to": [{"email": r["email"], "name": r["name"]}],
+                                "subject": f"✅ SAFE — {user_name} is now safe",
+                                "htmlContent": email_html,
+                                "textContent": safe_text,
+                            })
+                        )
+                    elif self._smtp_configured:
+                        tasks[f"email:{r['email']}"] = asyncio.ensure_future(
+                            self._send_smtp(
+                                to_email=r["email"],
+                                to_name=r["name"],
+                                subject=f"✅ SAFE — {user_name} is now safe",
+                                html_body=email_html,
+                                text_body=safe_text,
+                            )
+                        )
             for key, fut in tasks.items():
                 results[key] = await fut
         if not tasks:
@@ -351,14 +407,24 @@ class Notifier:
                         entry["whatsapp"] = "accepted"
                 if r["email"]:
                     if self.email_ready:
-                        email_res = await self._post(client, "/smtp/email", {
-                            "sender": {"email": self.settings.brevo_from_email, "name": self.settings.brevo_from_name},
-                            "to": [{"email": r["email"], "name": r["name"]}],
-                            "subject": f"🎥 Join Agora Video Call — {user_name}",
-                            "htmlContent": email_html,
-                            "textContent": text,
-                        })
-                        entry["email"] = "sent" if email_res["status"] == "accepted" else email_res
+                        if _is_configured(self.settings.brevo_api_key) and _is_configured(self.settings.brevo_from_email):
+                            email_res = await self._post(client, "/smtp/email", {
+                                "sender": {"email": self.settings.brevo_from_email, "name": self.settings.brevo_from_name},
+                                "to": [{"email": r["email"], "name": r["name"]}],
+                                "subject": f"🎥 Join Agora Video Call — {user_name}",
+                                "htmlContent": email_html,
+                                "textContent": text,
+                            })
+                            entry["email"] = "sent" if email_res["status"] == "accepted" else email_res
+                        elif self._smtp_configured:
+                            email_res = await self._send_smtp(
+                                to_email=r["email"],
+                                to_name=r["name"],
+                                subject=f"🎥 Join Agora Video Call — {user_name}",
+                                html_body=email_html,
+                                text_body=text,
+                            )
+                            entry["email"] = "sent" if email_res["status"] == "accepted" else email_res
                     else:
                         entry["email"] = "sent"
                 results[r["phone"] or r["email"] or r["name"] or "contact"] = entry

@@ -38,9 +38,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     if (userId.isEmpty) return;
     setState(() => _loadingCounts = true);
     try {
-      final sb = ref.read(supabaseProvider);
-      final docsFuture = sb.fetchDocuments(userId).catchError((_) => <Map<String, dynamic>>[]);
-      final alertsFuture = sb.fetchAlerts(userId).catchError((_) => <Map<String, dynamic>>[]);
+      final api = ref.read(apiProvider);
+      final docsFuture = api.healthVaultDocuments().catchError((_) => <Map<String, dynamic>>[]);
+      final alertsFuture = api.healthVaultAlerts().catchError((_) => <Map<String, dynamic>>[]);
       final results = await Future.wait([docsFuture, alertsFuture]);
       if (mounted) {
         setState(() {

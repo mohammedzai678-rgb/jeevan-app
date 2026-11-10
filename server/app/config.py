@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     brevo_whatsapp_medication_template_id: str = ""
     app_public_url: str = Field(default="https://jeevan-app-backend-production.up.railway.app")
 
+    # SMTP fallback (when Brevo is not configured)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+
     tomtom_api_key: str = ""
     openweather_key: str = ""
     agora_app_id: str = ""

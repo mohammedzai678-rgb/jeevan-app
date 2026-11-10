@@ -32,6 +32,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
+  Future<void> _googleSignIn() async {
+    FocusScope.of(context).unfocus();
+    setState(() => _busy = true);
+    try {
+      await ref.read(authProvider).signInWithGoogle();
+    } on AuthException catch (e) {
+      if (mounted) showSnack(context, e.message, error: true);
+    } catch (e) {
+      if (mounted) showSnack(context, 'Google sign-in failed: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _submit() async {
     final name = _nameCtrl.text.trim();
     final email = _emailCtrl.text.trim();
@@ -407,6 +421,31 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                   : Text(_signUp ? 'Create account' : 'Sign in'),
                             ),
                             const SizedBox(height: Gap.xs),
+
+                            // ── Divider ──
+                            Row(
+                              children: [
+                                const Expanded(child: Divider(color: Palette.outline)),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                                  child: Text('or', style: TextStyle(color: Palette.textDim, fontSize: 12.5)),
+                                ),
+                                const Expanded(child: Divider(color: Palette.outline)),
+                              ],
+                            ),
+                            const SizedBox(height: Gap.xs),
+
+                            // ── Google Sign-In ──
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(double.infinity, 48),
+                                side: const BorderSide(color: Palette.outline),
+                                foregroundColor: Palette.text,
+                              ),
+                              onPressed: _busy ? null : _googleSignIn,
+                              icon: const Text('G', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF4285F4))),
+                              label: const Text('Continue with Google'),
+                            ),
 
                           ],
                         ),

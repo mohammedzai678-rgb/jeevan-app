@@ -75,6 +75,36 @@ async def local_auth_signup(body: LocalAuthBody, request: Request) -> dict[str, 
     return _issue_local_session(request, body.email, body.name)
 
 
+class GoogleAuthBody(BaseModel):
+    id_token: str = Field(min_length=1)
+
+
+@router.post("/api/auth/google")
+async def google_auth(body: GoogleAuthBody, request: Request) -> dict[str, Any]:
+    """Verify a Google ID token and issue a local session."""
+    import httpx as _httpx
+
+    # Verify token with Google's tokeninfo endpoint
+    async with _httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://oauth2.googleapis.com/tokeninfo",
+            params={"id_token": body.id_token},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            raise HTTPException(401, "Invalid Google ID token")
+        info = resp.json()
+
+    email = info.get("email")
+    if not email:
+        raise HTTPException(401, "Google token has no email")
+    if info.get("email_verified") != "true":
+        raise HTTPException(401, "Google email not verified")
+
+    name = info.get("name") or info.get("given_name") or email.split("@")[0]
+    return _issue_local_session(request, email, name)
+
+
 # ── Live WebSocket ───────────────────────────────────────────────────────
 @router.websocket("/ws/live")
 async def live_ws(ws: WebSocket) -> None:
