@@ -53,8 +53,9 @@ create index if not exists idx_health_documents_user on public.health_documents 
 alter table public.health_documents enable row level security;
 drop policy if exists "health_documents_owner_access" on public.health_documents;
 create policy "health_documents_owner_access" on public.health_documents
-  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- 3. VAULT SETTINGS (Password protection for Viewing, Saving, Deleting)
 create table if not exists public.vault_settings (
@@ -67,8 +68,9 @@ create table if not exists public.vault_settings (
 alter table public.vault_settings enable row level security;
 drop policy if exists "vault_settings_owner_access" on public.vault_settings;
 create policy "vault_settings_owner_access" on public.vault_settings
-  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 -- 4. MEDISCAN RESULTS (Prescriptions, Diagnostics, Ingredient Scans)
 create table if not exists public.mediscan_results (

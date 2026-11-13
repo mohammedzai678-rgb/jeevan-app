@@ -70,3 +70,16 @@ class Persistence:
         except ValueError:
             return []
         return data if isinstance(data, list) else []
+
+    async def select_required(self, table: str, params: dict[str, str]) -> list[dict[str, Any]]:
+        """Select rows when an empty result must be distinguishable from a database failure."""
+        resp = await self._send("GET", table, params=params, prefer="return=representation")
+        if resp is None:
+            raise RuntimeError(f"Supabase query failed for {table}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(f"Supabase returned invalid data for {table}") from exc
+        if not isinstance(data, list):
+            raise RuntimeError(f"Supabase returned an unexpected response for {table}")
+        return data

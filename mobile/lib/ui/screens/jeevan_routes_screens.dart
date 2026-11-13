@@ -672,8 +672,10 @@ class _HealthVaultRouteScreenState
   bool _loading = true;
   bool _vaultLocked = true;
   String? _vaultPasswordHash;
+  String? _vaultLoadError;
   List<Map<String, dynamic>> _records = [];
   bool _savingCapturedPhoto = false;
+  bool _setupDialogShown = false;
 
   static const _categories = <String>[
     'All Records',
@@ -707,28 +709,43 @@ class _HealthVaultRouteScreenState
 
   Future<void> _loadVault() async {
     if (_userId.isEmpty) {
-      setState(() => _loading = false);
+      if (mounted) setState(() => _loading = false);
       return;
+    }
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _vaultLoadError = null;
+      });
     }
     try {
       final api = ref.read(apiProvider);
       final settings = await api.healthVaultSettings();
       _vaultPasswordHash = settings?['vault_password_hash'] as String?;
-      if (_vaultPasswordHash == null || _vaultPasswordHash!.isEmpty) {
-        _vaultLocked = false;
-      }
+      final hasPassword = _vaultPasswordHash?.isNotEmpty == true;
+      _vaultLocked =
+          hasPassword && !ref.read(storeProvider).isVaultUnlockedFor(_userId);
       if (!_vaultLocked) await _fetchDocuments();
     } catch (e) {
-      if (mounted) showSnack(context, 'Error loading vault: $e', error: true);
+      _vaultLoadError = e.toString();
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
   Future<void> _fetchDocuments() async {
+    final docs = await ref.read(apiProvider).healthVaultDocuments();
+    if (mounted) {
+      setState(() {
+        _records = docs;
+        _vaultLoadError = null;
+      });
+    }
+  }
+
+  Future<void> _refreshDocuments() async {
     try {
-      final docs = await ref.read(apiProvider).healthVaultDocuments();
-      if (mounted) setState(() => _records = docs);
+      await _fetchDocuments();
     } catch (e) {
       if (mounted)
         showSnack(context, 'Error loading documents: $e', error: true);
@@ -814,27 +831,29 @@ class _HealthVaultRouteScreenState
             side: const BorderSide(color: Palette.outline)),
         title: const Text(' Set Vault Password',
             style: TextStyle(color: Palette.text, fontWeight: FontWeight.w800)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-                'Create a password to protect your Health Vault. You\'ll need this to view, upload, or delete documents.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13)),
-            const SizedBox(height: 14),
-            TextField(
-                controller: passCtrl,
-                obscureText: true,
-                decoration: const InputDecoration(
-                    labelText: 'Password (min 6 chars)',
-                    prefixIcon: Icon(Icons.lock_rounded))),
-            const SizedBox(height: 10),
-            TextField(
-                controller: confirmCtrl,
-                obscureText: true,
-                decoration: const InputDecoration(
-                    labelText: 'Confirm Password',
-                    prefixIcon: Icon(Icons.lock_rounded))),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                  'Create a password to protect your Health Vault. You\'ll need this to view, upload, or delete documents.',
+                  style: TextStyle(color: Palette.textDim, fontSize: 13)),
+              const SizedBox(height: 14),
+              TextField(
+                  controller: passCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'Password (min 6 chars)',
+                      prefixIcon: Icon(Icons.lock_rounded))),
+              const SizedBox(height: 10),
+              TextField(
+                  controller: confirmCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'Confirm Password',
+                      prefixIcon: Icon(Icons.lock_rounded))),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -857,6 +876,8 @@ class _HealthVaultRouteScreenState
                 await ref.read(apiProvider).healthVaultSetPassword(hash);
                 _vaultPasswordHash = hash;
                 _vaultLocked = false;
+                ref.read(storeProvider).setVaultUnlockedFor(_userId);
+                _setupDialogShown = true;
                 await _fetchDocuments();
                 if (ctx.mounted) Navigator.of(ctx).pop();
                 if (mounted) {
@@ -872,10 +893,15 @@ class _HealthVaultRouteScreenState
         ],
       ),
     );
+    passCtrl.dispose();
+    confirmCtrl.dispose();
   }
 
   Future<bool> _promptPassword(String action) async {
-    if (_vaultPasswordHash == null || _vaultPasswordHash!.isEmpty) return true;
+    final store = ref.read(storeProvider);
+    if (_vaultPasswordHash == null ||
+        _vaultPasswordHash!.isEmpty ||
+        store.isVaultUnlockedFor(_userId)) return true;
     final passCtrl = TextEditingController();
     final result = await showDialog<bool>(
       context: context,
@@ -912,7 +938,10 @@ class _HealthVaultRouteScreenState
         ],
       ),
     );
-    return result == true;
+    passCtrl.dispose();
+    final unlocked = result == true;
+    if (unlocked) store.setVaultUnlockedFor(_userId);
+    return unlocked;
   }
 
   void _unlockVault() async {
@@ -927,26 +956,29 @@ class _HealthVaultRouteScreenState
             side: const BorderSide(color: Palette.outline)),
         title: const Text(' Health Vault Locked',
             style: TextStyle(color: Palette.text, fontWeight: FontWeight.w800)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-                'Enter your vault password to access your encrypted medical documents.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13)),
-            const SizedBox(height: 14),
-            TextField(
-                controller: passCtrl,
-                obscureText: true,
-                decoration: const InputDecoration(
-                    labelText: 'Vault Password',
-                    prefixIcon: Icon(Icons.key_rounded))),
-          ],
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                  'Enter your vault password to access your encrypted medical documents.',
+                  style: TextStyle(color: Palette.textDim, fontSize: 13)),
+              const SizedBox(height: 14),
+              TextField(
+                  controller: passCtrl,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                      labelText: 'Vault Password',
+                      prefixIcon: Icon(Icons.key_rounded))),
+            ],
+          ),
         ),
         actions: [
           FilledButton(
             onPressed: () async {
               if (_verifyPassword(passCtrl.text)) {
                 Navigator.of(ctx).pop();
+                ref.read(storeProvider).setVaultUnlockedFor(_userId);
                 setState(() => _vaultLocked = false);
                 await _fetchDocuments();
                 setState(() {});
@@ -959,6 +991,7 @@ class _HealthVaultRouteScreenState
         ],
       ),
     );
+    passCtrl.dispose();
   }
 
   void _openDocumentViewer(Map<String, dynamic> doc) async {
@@ -1359,6 +1392,42 @@ class _HealthVaultRouteScreenState
           body: Center(child: CircularProgressIndicator()));
     }
 
+    if (_vaultLoadError != null) {
+      return Scaffold(
+        backgroundColor: Palette.bg,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.cloud_off_rounded,
+                    size: 52, color: Palette.orange),
+                const SizedBox(height: 16),
+                const Text('Health Vault could not load',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: Palette.text,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(height: 8),
+                Text(_vaultLoadError!,
+                    textAlign: TextAlign.center,
+                    style:
+                        const TextStyle(color: Palette.textDim, fontSize: 13)),
+                const SizedBox(height: 18),
+                FilledButton.icon(
+                  onPressed: _loadVault,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     if (_vaultLocked &&
         _vaultPasswordHash != null &&
         _vaultPasswordHash!.isNotEmpty) {
@@ -1394,9 +1463,15 @@ class _HealthVaultRouteScreenState
       );
     }
 
-    if (_vaultPasswordHash == null && _records.isEmpty && _userId.isNotEmpty) {
+    if (_vaultPasswordHash == null &&
+        _records.isEmpty &&
+        _userId.isNotEmpty &&
+        !_setupDialogShown) {
+      _setupDialogShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_vaultPasswordHash == null && mounted) _setupVaultPassword();
+        if (_vaultPasswordHash == null && mounted) {
+          unawaited(_setupVaultPassword());
+        }
       });
     }
 
@@ -1421,7 +1496,7 @@ class _HealthVaultRouteScreenState
     return Scaffold(
       backgroundColor: Palette.bg,
       body: RefreshIndicator(
-        onRefresh: _fetchDocuments,
+        onRefresh: _refreshDocuments,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
           children: [
@@ -1788,6 +1863,9 @@ class _MediscanRouteScreenState extends ConsumerState<MediscanRouteScreen> {
   }
 
   Future<bool> _confirmVaultPasswordForSave() async {
+    final userId = ref.read(authProvider).session?.userId ?? '';
+    final store = ref.read(storeProvider);
+    if (store.isVaultUnlockedFor(userId)) return true;
     final settings = await ref.read(apiProvider).healthVaultSettings();
     final expectedHash = settings?['vault_password_hash']?.toString() ?? '';
     if (expectedHash.isEmpty) return true;
@@ -1815,7 +1893,10 @@ class _MediscanRouteScreenState extends ConsumerState<MediscanRouteScreen> {
     );
     passwordCtrl.dispose();
     if (entered == null) return false;
-    if (base64Encode(utf8.encode(entered)) == expectedHash) return true;
+    if (base64Encode(utf8.encode(entered)) == expectedHash) {
+      store.setVaultUnlockedFor(userId);
+      return true;
+    }
     if (mounted)
       showSnack(context, 'That vault password is incorrect.', error: true);
     return false;

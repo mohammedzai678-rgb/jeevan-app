@@ -31,10 +31,16 @@ class DocumentBody(BaseModel):
 @router.get("/documents")
 async def list_documents(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
     ctx = get_ctx(request)
-    rows = await ctx.persist.select(
-        "health_documents",
-        {"user_id": f"eq.{user.id}", "order": "created_at.desc"},
-    )
+    try:
+        rows = await ctx.persist.select_required(
+            "health_documents",
+            {"user_id": f"eq.{user.id}", "order": "created_at.desc"},
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            503,
+            "Health Vault storage is unavailable. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
+        ) from exc
     return {"documents": rows}
 
 
@@ -58,7 +64,10 @@ async def create_document(body: DocumentBody, request: Request, user: User = Dep
     }
     ok = await ctx.persist.insert("health_documents", doc)
     if not ok:
-        raise HTTPException(500, "Failed to store document")
+        raise HTTPException(
+            503,
+            "Document could not be saved. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
+        )
     return {"status": "created", "document": doc}
 
 
@@ -77,18 +86,31 @@ class VaultPasswordBody(BaseModel):
 @router.get("/settings")
 async def get_vault_settings(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
     ctx = get_ctx(request)
-    rows = await ctx.persist.select("vault_settings", {"user_id": f"eq.{user.id}", "limit": "1"})
+    try:
+        rows = await ctx.persist.select_required(
+            "vault_settings", {"user_id": f"eq.{user.id}", "limit": "1"}
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            503,
+            "Health Vault settings are unavailable. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
+        ) from exc
     return {"settings": rows[0] if rows else None}
 
 
 @router.post("/settings/password")
 async def set_vault_password(body: VaultPasswordBody, request: Request, user: User = Depends(current_user)) -> dict[str, str]:
     ctx = get_ctx(request)
-    await ctx.persist.upsert("vault_settings", {
+    saved = await ctx.persist.upsert("vault_settings", {
         "user_id": user.id,
         "vault_password_hash": body.vault_password_hash,
         "is_vault_locked": True,
     }, "user_id")
+    if not saved:
+        raise HTTPException(
+            503,
+            "Vault password was not saved. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
+        )
     return {"status": "saved"}
 
 

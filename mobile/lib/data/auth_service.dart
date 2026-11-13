@@ -17,7 +17,8 @@ class AuthException implements Exception {
 
 /// Supabase GoTrue over plain REST (no SDK: one fewer dependency and full control of refresh timing).
 class AuthService {
-  AuthService(this._store, {http.Client? client}) : _http = client ?? http.Client();
+  AuthService(this._store, {http.Client? client})
+      : _http = client ?? http.Client();
   final SecureStore _store;
   final http.Client _http;
 
@@ -33,7 +34,8 @@ class AuthService {
     if (_session != null && _session!.expiringSoon) {
       // Try to refresh the token
       try {
-        final fresh = await _grant('refresh_token', {'refresh_token': _session!.refreshToken});
+        final fresh = await _grant(
+            'refresh_token', {'refresh_token': _session!.refreshToken});
         await _set(fresh);
       } catch (_) {
         // Token expired, clear session
@@ -43,27 +45,31 @@ class AuthService {
     _controller.add(_session);
   }
 
-  Map<String, String> get _headers => {'apikey': Config.supabaseAnonKey, 'Content-Type': 'application/json'};
+  Map<String, String> get _headers =>
+      {'apikey': Config.supabaseAnonKey, 'Content-Type': 'application/json'};
 
   bool get _supabaseConfigured =>
       Config.supabaseAnonKey.isNotEmpty && Config.supabaseUrl.isNotEmpty;
 
   String get _apiBaseUrl {
     final o = _store.serverUrlOverride;
-    return (o != null && o.isNotEmpty ? o : Config.apiBaseUrl).replaceAll(RegExp(r'/+$'), '');
+    return (o != null && o.isNotEmpty ? o : Config.apiBaseUrl)
+        .replaceAll(RegExp(r'/+$'), '');
   }
 
   Future<void> signIn(String email, String password) async {
     if (_supabaseConfigured) {
       try {
-        final s = await _grant('password', {'email': email, 'password': password});
+        final s =
+            await _grant('password', {'email': email, 'password': password});
         await _set(s);
         return;
       } catch (_) {
         // Fall through to FastAPI local auth
       }
     }
-    final s = await _localAuth('/api/auth/login', {'email': email, 'password': password});
+    final s = await _localAuth(
+        '/api/auth/login', {'email': email, 'password': password});
     await _set(s);
   }
 
@@ -73,7 +79,12 @@ class AuthService {
       try {
         final res = await _http
             .post(Uri.parse('${Config.supabaseUrl}/auth/v1/signup'),
-                headers: _headers, body: jsonEncode({'email': email, 'password': password, 'data': {'name': name}}))
+                headers: _headers,
+                body: jsonEncode({
+                  'email': email,
+                  'password': password,
+                  'data': {'name': name}
+                }))
             .timeout(const Duration(seconds: 10));
         final body = _decode(res);
         if (res.statusCode < 400) {
@@ -87,7 +98,8 @@ class AuthService {
         // Fall through to FastAPI local auth
       }
     }
-    final s = await _localAuth('/api/auth/signup', {'email': email, 'password': password, 'name': name});
+    final s = await _localAuth('/api/auth/signup',
+        {'email': email, 'password': password, 'name': name});
     await _set(s);
     return true;
   }
@@ -149,7 +161,8 @@ class AuthService {
       try {
         final res = await _http
             .post(
-              Uri.parse('${Config.supabaseUrl}/auth/v1/token?grant_type=id_token'),
+              Uri.parse(
+                  '${Config.supabaseUrl}/auth/v1/token?grant_type=id_token'),
               headers: _headers,
               body: jsonEncode({'provider': 'google', 'id_token': idToken}),
             )
@@ -185,7 +198,8 @@ class AuthService {
     if (_refreshing != null) return (await _refreshing!.future)?.accessToken;
     final c = _refreshing = Completer<Session?>();
     try {
-      final fresh = await _grant('refresh_token', {'refresh_token': s.refreshToken});
+      final fresh =
+          await _grant('refresh_token', {'refresh_token': s.refreshToken});
       await _set(fresh);
       c.complete(fresh);
       return fresh.accessToken;
@@ -203,7 +217,8 @@ class AuthService {
 
   Future<Session> _grant(String type, Map<String, dynamic> body) async {
     final res = await _http
-        .post(Uri.parse('${Config.supabaseUrl}/auth/v1/token?grant_type=$type'), headers: _headers, body: jsonEncode(body))
+        .post(Uri.parse('${Config.supabaseUrl}/auth/v1/token?grant_type=$type'),
+            headers: _headers, body: jsonEncode(body))
         .timeout(const Duration(seconds: 15));
     final json = _decode(res);
     if (res.statusCode >= 400) throw AuthException(_message(json));
@@ -231,10 +246,16 @@ class AuthService {
     }
   }
 
-  String _message(Map<String, dynamic> j) =>
-      (j['error_description'] ?? j['msg'] ?? j['message'] ?? 'Authentication failed').toString();
+  String _message(Map<String, dynamic> j) => (j['error_description'] ??
+          j['msg'] ??
+          j['message'] ??
+          'Authentication failed')
+      .toString();
 
   Future<void> _set(Session? s) async {
+    if (s == null || (_session != null && _session!.userId != s.userId)) {
+      _store.setVaultUnlockedFor(null);
+    }
     _session = s;
     await _store.writeSession(s);
     _controller.add(s);

@@ -10,6 +10,14 @@ class SecureStore {
   SecureStore._(this._secure, this._prefs);
   final FlutterSecureStorage _secure;
   final SharedPreferences _prefs;
+  String? _vaultUnlockedUserId;
+
+  bool isVaultUnlockedFor(String userId) =>
+      userId.isNotEmpty && _vaultUnlockedUserId == userId;
+
+  void setVaultUnlockedFor(String? userId) {
+    _vaultUnlockedUserId = userId?.isNotEmpty == true ? userId : null;
+  }
 
   static Future<SecureStore> open() async => SecureStore._(
         const FlutterSecureStorage(
