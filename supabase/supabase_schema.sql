@@ -11,7 +11,7 @@ create extension if not exists pgcrypto;
 
 -- 1. PROFILES
 create table if not exists public.profiles (
-  id uuid primary key references auth.users (id) on delete cascade,
+  id text primary key,
   name text not null default 'User',
   email text not null default '',
   phone text,
@@ -27,13 +27,13 @@ create table if not exists public.profiles (
 alter table public.profiles enable row level security;
 drop policy if exists "profiles_owner_access" on public.profiles;
 create policy "profiles_owner_access" on public.profiles
-  for all using (auth.uid() = id or auth.role() = 'authenticated')
-  with check (auth.uid() = id or auth.role() = 'authenticated');
+  for all to authenticated using ((auth.jwt() ->> 'sub') = id)
+  with check ((auth.jwt() ->> 'sub') = id);
 
 -- 2. HEALTH VAULT DOCUMENTS
 create table if not exists public.health_documents (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   title text not null,
   category text not null default 'General',
   description text,
@@ -54,12 +54,12 @@ alter table public.health_documents enable row level security;
 drop policy if exists "health_documents_owner_access" on public.health_documents;
 create policy "health_documents_owner_access" on public.health_documents
   for all to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 3. VAULT SETTINGS (Password protection for Viewing, Saving, Deleting)
 create table if not exists public.vault_settings (
-  user_id uuid primary key references auth.users (id) on delete cascade,
+  user_id text primary key,
   vault_password_hash text not null,
   is_vault_locked boolean not null default true,
   created_at timestamptz not null default timezone('utc', now()),
@@ -69,13 +69,13 @@ alter table public.vault_settings enable row level security;
 drop policy if exists "vault_settings_owner_access" on public.vault_settings;
 create policy "vault_settings_owner_access" on public.vault_settings
   for all to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 4. MEDISCAN RESULTS (Prescriptions, Diagnostics, Ingredient Scans)
 create table if not exists public.mediscan_results (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   scan_type text not null, -- 'prescription', 'diagnostic', 'ingredient'
   original_image_url text,
   extracted_data jsonb default '{}'::jsonb,
@@ -88,13 +88,13 @@ create index if not exists idx_mediscan_user on public.mediscan_results (user_id
 alter table public.mediscan_results enable row level security;
 drop policy if exists "mediscan_owner_access" on public.mediscan_results;
 create policy "mediscan_owner_access" on public.mediscan_results
-  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 5. SYMPTOM CHECKS (AI Triage & Clinical Checks)
 create table if not exists public.symptom_checks (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   symptoms jsonb not null default '{}'::jsonb,
   body_region text not null,
   severity text not null default 'moderate',
@@ -108,13 +108,13 @@ create index if not exists idx_symptom_checks_user on public.symptom_checks (use
 alter table public.symptom_checks enable row level security;
 drop policy if exists "symptom_checks_owner_access" on public.symptom_checks;
 create policy "symptom_checks_owner_access" on public.symptom_checks
-  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 6. EMERGENCY CONTACTS
 create table if not exists public.emergency_contacts (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   name text not null,
   phone text not null,
   relationship text not null default 'Family',
@@ -125,13 +125,13 @@ create index if not exists idx_emergency_contacts_user on public.emergency_conta
 alter table public.emergency_contacts enable row level security;
 drop policy if exists "emergency_contacts_owner_access" on public.emergency_contacts;
 create policy "emergency_contacts_owner_access" on public.emergency_contacts
-  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 7. EMERGENCY ALERTS
 create table if not exists public.emergency_alerts (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   alert_type text not null,
   latitude numeric not null,
   longitude numeric not null,
@@ -143,8 +143,8 @@ create index if not exists idx_emergency_alerts_user on public.emergency_alerts 
 alter table public.emergency_alerts enable row level security;
 drop policy if exists "emergency_alerts_access" on public.emergency_alerts;
 create policy "emergency_alerts_access" on public.emergency_alerts
-  for all using (true)
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 8. NEARBY FACILITIES (Hospitals, Blood Banks, NGOs, Ambulance)
 create table if not exists public.nearby_facilities (
@@ -167,15 +167,15 @@ create policy "nearby_facilities_write" on public.nearby_facilities for all usin
 -- 9. DEVICE PAIRINGS (ESP32 Hardware link to User)
 create table if not exists public.device_pairings (
   device_id text primary key,
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   paired_at timestamptz not null default timezone('utc', now())
 );
 create index if not exists idx_device_pairings_user on public.device_pairings (user_id);
 alter table public.device_pairings enable row level security;
 drop policy if exists "device pairings owner select" on public.device_pairings;
 create policy "device pairings owner select" on public.device_pairings
-  for all using (auth.uid() = user_id or auth.role() = 'authenticated')
-  with check (auth.uid() = user_id or auth.role() = 'authenticated');
+  for all to authenticated using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- 10. STORAGE BUCKET FOR HEALTH VAULT FILES
 insert into storage.buckets (id, name, public)
@@ -184,12 +184,12 @@ on conflict (id) do update set public = false;
 
 drop policy if exists "health_vault_storage_read" on storage.objects;
 create policy "health_vault_storage_read" on storage.objects
-  for select using (bucket_id = 'health-vault' and (storage.foldername(name))[1] = auth.uid()::text);
+  for select using (bucket_id = 'health-vault' and (storage.foldername(name))[1] = (auth.jwt() ->> 'sub'));
 
 drop policy if exists "health_vault_storage_write" on storage.objects;
 create policy "health_vault_storage_write" on storage.objects
-  for all using (bucket_id = 'health-vault' and (storage.foldername(name))[1] = auth.uid()::text)
-  with check (bucket_id = 'health-vault' and (storage.foldername(name))[1] = auth.uid()::text);
+  for all using (bucket_id = 'health-vault' and (storage.foldername(name))[1] = (auth.jwt() ->> 'sub'))
+  with check (bucket_id = 'health-vault' and (storage.foldername(name))[1] = (auth.jwt() ->> 'sub'));
 
 -- 10. REALTIME PUBLICATIONS FOR MOBILE SYNC
 do $$

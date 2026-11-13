@@ -12,8 +12,13 @@ log = logging.getLogger("jeevan.persist")
 
 
 class PersistenceQueryError(RuntimeError):
-    def __init__(self, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        status_code: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
         self.status_code = status_code
+        self.error_code = error_code
         super().__init__("Supabase query failed")
 
 
@@ -77,7 +82,15 @@ class Persistence:
             raise PersistenceQueryError() from exc
         if resp.status_code >= 400:
             log.warning("supabase %s %s -> %s %s", method, table, resp.status_code, resp.text[:200])
-            raise PersistenceQueryError(resp.status_code)
+            error_code = None
+            try:
+                error_body = resp.json()
+                if isinstance(error_body, dict):
+                    code = error_body.get("code")
+                    error_code = code if isinstance(code, str) else None
+            except ValueError:
+                pass
+            raise PersistenceQueryError(resp.status_code, error_code)
         return resp
 
     async def insert_required(self, table: str, row: dict[str, Any]) -> None:

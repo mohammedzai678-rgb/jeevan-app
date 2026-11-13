@@ -16,6 +16,11 @@ router = APIRouter(prefix="/api/health-vault", tags=["health-vault"])
 
 
 def _vault_database_error(error: PersistenceQueryError, table: str) -> str:
+    if error.error_code == "22P02":
+        return (
+            "The Supabase schema still expects UUID user IDs, but this app account uses a local user ID. "
+            "Run supabase/011_text_user_ids.sql in the project configured on Railway, then retry."
+        )
     if error.status_code in (401, 403):
         return (
             "Railway could not authenticate with Supabase. Set SUPABASE_URL and "

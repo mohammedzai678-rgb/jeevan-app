@@ -6,7 +6,7 @@ create extension if not exists pgcrypto;
 
 create table if not exists public.health_documents (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid not null references auth.users (id) on delete cascade,
+  user_id text not null,
   title text not null,
   category text not null default 'General',
   description text,
@@ -34,11 +34,11 @@ drop policy if exists "health_documents_owner_access" on public.health_documents
 drop policy if exists "health_documents_user_access" on public.health_documents;
 create policy "health_documents_user_access" on public.health_documents
   for all to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 create table if not exists public.vault_settings (
-  user_id uuid primary key references auth.users (id) on delete cascade,
+  user_id text primary key,
   vault_password_hash text not null,
   is_vault_locked boolean not null default true,
   created_at timestamptz not null default timezone('utc', now()),
@@ -53,8 +53,8 @@ drop policy if exists "vault_settings_owner_access" on public.vault_settings;
 drop policy if exists "vault_settings_user_access" on public.vault_settings;
 create policy "vault_settings_user_access" on public.vault_settings
   for all to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  using ((auth.jwt() ->> 'sub') = user_id)
+  with check ((auth.jwt() ->> 'sub') = user_id);
 
 -- Files are private. Storage paths must start with the signed-in user's UUID.
 insert into storage.buckets (id, name, public)
@@ -68,9 +68,9 @@ create policy "health_vault_storage_access" on storage.objects
   for all to authenticated
   using (
     bucket_id = 'health-vault'
-    and (storage.foldername(name))[1] = auth.uid()::text
+    and (storage.foldername(name))[1] = (auth.jwt() ->> 'sub')
   )
   with check (
     bucket_id = 'health-vault'
-    and (storage.foldername(name))[1] = auth.uid()::text
+    and (storage.foldername(name))[1] = (auth.jwt() ->> 'sub')
   );

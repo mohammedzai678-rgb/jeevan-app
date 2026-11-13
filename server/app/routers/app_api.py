@@ -36,7 +36,15 @@ def _issue_local_session(request: Request, email: str, name: str | None = None) 
     now = int(time.time())
     exp = now + 86400 * 7
     token = jwt.encode(
-        {"sub": uid, "email": clean_email, "name": name or clean_email.split("@")[0], "aud": "authenticated", "iat": now, "exp": exp},
+        {
+            "sub": uid,
+            "email": clean_email,
+            "name": name or clean_email.split("@")[0],
+            "aud": "authenticated",
+            "role": "authenticated",
+            "iat": now,
+            "exp": exp,
+        },
         secret,
         algorithm="HS256",
     )
