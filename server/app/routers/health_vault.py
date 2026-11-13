@@ -9,9 +9,32 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..ctx import Context, get_ctx
+from ..persistence import PersistenceQueryError
 from ..security import User, current_user
 
 router = APIRouter(prefix="/api/health-vault", tags=["health-vault"])
+
+
+def _vault_database_error(error: PersistenceQueryError, table: str) -> str:
+    if error.status_code in (401, 403):
+        return (
+            "Railway could not authenticate with Supabase. Set SUPABASE_URL and "
+            "SUPABASE_SERVICE_ROLE_KEY to credentials for the same Supabase project, then redeploy."
+        )
+    if error.status_code == 404:
+        return (
+            f"Supabase table {table} was not found in the project configured on Railway. "
+            "Run supabase/010_health_vault_reliability.sql in that same project."
+        )
+    if error.status_code is None:
+        return (
+            "Railway could not reach Supabase. Check its SUPABASE_URL and "
+            "SUPABASE_SERVICE_ROLE_KEY variables, then redeploy."
+        )
+    return (
+        f"Railway could not access Supabase table {table} (HTTP {error.status_code}). "
+        "Check that Railway points to the project where supabase/010_health_vault_reliability.sql was run."
+    )
 
 
 class DocumentBody(BaseModel):
@@ -36,11 +59,8 @@ async def list_documents(request: Request, user: User = Depends(current_user)) -
             "health_documents",
             {"user_id": f"eq.{user.id}", "order": "created_at.desc"},
         )
-    except RuntimeError as exc:
-        raise HTTPException(
-            503,
-            "Health Vault storage is unavailable. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
-        ) from exc
+    except PersistenceQueryError as exc:
+        raise HTTPException(503, _vault_database_error(exc, "health_documents")) from exc
     return {"documents": rows}
 
 
@@ -62,12 +82,10 @@ async def create_document(body: DocumentBody, request: Request, user: User = Dep
         **({"file_size": body.file_size} if body.file_size is not None else {}),
         **({"file_type": body.file_type} if body.file_type else {}),
     }
-    ok = await ctx.persist.insert("health_documents", doc)
-    if not ok:
-        raise HTTPException(
-            503,
-            "Document could not be saved. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
-        )
+    try:
+        await ctx.persist.insert_required("health_documents", doc)
+    except PersistenceQueryError as exc:
+        raise HTTPException(503, _vault_database_error(exc, "health_documents")) from exc
     return {"status": "created", "document": doc}
 
 
@@ -90,27 +108,22 @@ async def get_vault_settings(request: Request, user: User = Depends(current_user
         rows = await ctx.persist.select_required(
             "vault_settings", {"user_id": f"eq.{user.id}", "limit": "1"}
         )
-    except RuntimeError as exc:
-        raise HTTPException(
-            503,
-            "Health Vault settings are unavailable. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
-        ) from exc
+    except PersistenceQueryError as exc:
+        raise HTTPException(503, _vault_database_error(exc, "vault_settings")) from exc
     return {"settings": rows[0] if rows else None}
 
 
 @router.post("/settings/password")
 async def set_vault_password(body: VaultPasswordBody, request: Request, user: User = Depends(current_user)) -> dict[str, str]:
     ctx = get_ctx(request)
-    saved = await ctx.persist.upsert("vault_settings", {
-        "user_id": user.id,
-        "vault_password_hash": body.vault_password_hash,
-        "is_vault_locked": True,
-    }, "user_id")
-    if not saved:
-        raise HTTPException(
-            503,
-            "Vault password was not saved. Apply supabase/010_health_vault_reliability.sql and verify the backend Supabase service key.",
-        )
+    try:
+        await ctx.persist.upsert_required("vault_settings", {
+            "user_id": user.id,
+            "vault_password_hash": body.vault_password_hash,
+            "is_vault_locked": True,
+        }, "user_id")
+    except PersistenceQueryError as exc:
+        raise HTTPException(503, _vault_database_error(exc, "vault_settings")) from exc
     return {"status": "saved"}
 
 
