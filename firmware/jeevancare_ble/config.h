@@ -12,13 +12,13 @@
 // =============================================================================
 
 // --- Wi-Fi & FastAPI Backend Endpoint Configuration ---
-#define WIFI_SSID           "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD       "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID           "mohammed's M36"
+#define WIFI_PASSWORD       "Zaid3232"
 
 // Jeevan FastAPI backend URL (hosted on Railway, or your local LAN IP during dev).
 #define BACKEND_BASE_URL    "https://jeevan-app-backend-production.up.railway.app"
 #define DEVICE_ID           "esp32_jeevancare_01"
-#define DEVICE_API_KEY      "YOUR_DEVICE_API_KEY"
+#define DEVICE_API_KEY      "jeevan_esp32_prod_2026"
 
 #define BACKEND_INGEST_URL  BACKEND_BASE_URL "/api/device/ingest"
 #define COMMAND_POLL_URL    BACKEND_BASE_URL "/api/device/command"

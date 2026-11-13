@@ -1,3 +1,4 @@
+
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -428,10 +429,11 @@ void processTemperature() {
 // -----------------------------------------------------------------------------
 static bool beginHttp(HTTPClient& http, WiFiClient& plain, WiFiClientSecure& secure, const String& url) {
   http.setReuse(false);
-  http.setConnectTimeout(3000);
-  http.setTimeout(3000);
+  http.setConnectTimeout(10000);
+  http.setTimeout(10000);
   if (url.startsWith("https")) {
     secure.setInsecure();
+    secure.setTimeout(10);
     return http.begin(secure, url);
   }
   return http.begin(plain, url);
@@ -961,7 +963,7 @@ void clearMedicineReminder() {
     WiFiClientSecure secure;
     if (beginHttp(http, plain, secure, REMINDER_ACK_URL)) {
       http.addHeader("Content-Type", "application/json");
-      http.setTimeout(3000);
+      http.setTimeout(8000);
       http.POST("{\"device_id\":\"" DEVICE_ID "\",\"api_key\":\"" DEVICE_API_KEY "\"}");
       http.end();
       if (DEBUG_MODE) Serial.println("[Reminder] Server acknowledge complete.");
@@ -1134,11 +1136,16 @@ void setup() {
     Serial.printf("\nConnecting to Wi-Fi '%s'...\n", WIFI_SSID);
   }
 
-  // Wait up to 8 seconds for initial connection
+  // Wait up to 15 seconds for initial connection (mobile hotspot needs more time)
   unsigned long startWifi = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - startWifi < 8000)) {
-    delay(400);
+  while (WiFi.status() != WL_CONNECTED && (millis() - startWifi < 15000)) {
+    delay(500);
     if (DEBUG_MODE) Serial.print(".");
+  }
+  // Extra settle time for DNS/routing to become available on mobile hotspot
+  if (WiFi.status() == WL_CONNECTED) {
+    delay(2000);
+    if (DEBUG_MODE) Serial.println("\n[WiFi] Post-connect settle done");
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -1203,7 +1210,7 @@ void setup() {
   xTaskCreatePinnedToCore(
     networkTask,
     "NetworkTask",
-    16384,
+    12288,
     NULL,
     1,
     &NetworkTaskHandle,

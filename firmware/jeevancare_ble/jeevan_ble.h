@@ -2,6 +2,7 @@
 #define JEEVAN_BLE_H
 
 #include <Arduino.h>
+#include <esp_bt.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -94,6 +95,9 @@ class JeevanBleCommandCallbacks : public BLECharacteristicCallbacks {
 };
 
 inline void bleBegin(const char* deviceNameSuffix = "VitaWatch") {
+  // Release classic BT memory — saves ~30 KB heap for HTTPS
+  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+
   String devName = String("Jeevan-") + (deviceNameSuffix ? deviceNameSuffix : "VitaWatch");
   BLEDevice::init(devName.c_str());
   BLEDevice::setMTU(185);
