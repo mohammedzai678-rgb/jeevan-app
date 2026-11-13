@@ -144,13 +144,14 @@ def _apply_obstacle_guidance(telemetry: dict[str, Any]) -> None:
         value = telemetry.get(key)
         if value is None:
             return None
-        return 201.0 if value == -1 else float(value)
+        return 401.0 if value == -1 else float(value)
 
     left, front, right = (distance(key) for key in ("left_cm", "front_cm", "right_cm"))
     left_blocked = telemetry.get("left_contact") is True or (left is not None and left <= OBSTACLE_WARNING_CM)
     front_blocked = telemetry.get("front_contact") is True or (front is not None and front <= OBSTACLE_WARNING_CM)
     right_blocked = telemetry.get("right_contact") is True or (right is not None and right <= OBSTACLE_WARNING_CM)
     left_clear = left is not None and left > OBSTACLE_WARNING_CM and not telemetry.get("left_contact")
+    front_clear = front is not None and front > OBSTACLE_WARNING_CM and not telemetry.get("front_contact")
     right_clear = right is not None and right > OBSTACLE_WARNING_CM and not telemetry.get("right_contact")
 
     if front_blocked:
@@ -162,15 +163,18 @@ def _apply_obstacle_guidance(telemetry: dict[str, Any]) -> None:
         elif right_clear:
             direction, prompt = "right", "Obstacle ahead. Go right."
         else:
-            direction, prompt = "stop", "Stop. The path ahead is blocked."
+            direction, prompt = "stop", "Stop. Turn back slowly."
     elif right_blocked and left_blocked:
-        direction, prompt = "stop", "Stop. Obstacles on both sides."
+        if front_clear:
+            direction, prompt = "straight", "Both sides are blocked. Continue straight carefully."
+        else:
+            direction, prompt = "stop", "Stop. Turn back slowly."
     elif right_blocked:
         direction = "left" if left_clear else "stop"
-        prompt = "Obstacle on your right. Go left." if left_clear else "Stop. Obstacle on your right."
+        prompt = "Obstacle on your right. Go left." if left_clear else "Stop. Turn back slowly."
     elif left_blocked:
         direction = "right" if right_clear else "stop"
-        prompt = "Obstacle on your left. Go right." if right_clear else "Stop. Obstacle on your left."
+        prompt = "Obstacle on your left. Go right." if right_clear else "Stop. Turn back slowly."
     else:
         has_reading = any(telemetry.get(key) is not None for key in ("left_cm", "front_cm", "right_cm"))
         direction = "clear" if has_reading else "unknown"
@@ -184,6 +188,41 @@ def _apply_obstacle_guidance(telemetry: dict[str, Any]) -> None:
     }.get(direction, "off")
     telemetry["voice_prompt"] = prompt
     telemetry["guidance"] = prompt or ("clear" if direction == "clear" else "unknown")
+
+
+@router.post("/telemetry/app")
+async def stick_app_telemetry(
+    request: Request, user: User = Depends(current_user)
+) -> dict[str, Any]:
+    """Accept BLE readings relayed by the signed-in phone app."""
+    ctx = get_ctx(request)
+    _require_stick_owner(ctx, user)
+    body = await request.json()
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, dict):
+        raise HTTPException(400, "Missing telemetry data payload")
+
+    t = _STICK.telemetry
+    for key in ("left_cm", "front_cm", "right_cm"):
+        if key in data:
+            t[key] = _number(data[key], key, 0, 5000, sentinel=-1)
+    for key in ("left_contact", "front_contact", "right_contact", "light_on"):
+        if key in data:
+            if not isinstance(data[key], bool):
+                raise HTTPException(422, f"{key} must be a boolean")
+            t[key] = data[key]
+    for key in ("ldr_raw", "ldr_avg", "ldr_threshold", "ldr_hysteresis"):
+        if key in data:
+            t[key] = _number(data[key], key, 0, 65535)
+    if "uptime_s" in data:
+        t["uptime_s"] = _number(data["uptime_s"], "uptime_s", 0, 4_294_967_295)
+    if "light_on" in data:
+        t["light_source"] = "device"
+
+    _apply_obstacle_guidance(t)
+    _STICK.last_telemetry_ms = int(time.time() * 1000)
+    _broadcast_stick(ctx)
+    return {"status": "success", "received_at": _STICK.last_telemetry_ms}
 
 
 @router.post("/telemetry")
@@ -318,15 +357,24 @@ async def stick_location(request: Request, user: User = Depends(current_user)) -
         raise HTTPException(400, "Missing or invalid latitude/longitude numbers")
     lat = _number(lat, "lat", -90, 90)
     lng = _number(lng, "lng", -180, 180)
+    accuracy = _number(body.get("accuracy_m"), "accuracy_m", 0, 100_000)
+    speed = _number(body.get("speed_kmh"), "speed_kmh", 0, 300)
+    heading = _number(body.get("heading"), "heading", 0, 360)
+    tracking_mode = body.get("tracking_mode", "phone_gps")
+    if not isinstance(tracking_mode, str) or len(tracking_mode) > 32:
+        raise HTTPException(422, "tracking_mode must be short text")
     old_status = _STICK.telemetry.get("geofence_status")
     new_status = _STICK.evaluate_geofence(float(lat), float(lng))
     _STICK.telemetry.update(
         {
             "lat": float(lat),
             "lng": float(lng),
-            "tracking_mode": body.get("tracking_mode", "phone_gps"),
+            "tracking_mode": tracking_mode,
             "location_updated_at": int(time.time() * 1000),
             "geofence_status": new_status,
+            "accuracy_m": accuracy,
+            "speed_kmh": speed,
+            "heading": heading,
         }
     )
     if new_status == "breached" and old_status != "breached":

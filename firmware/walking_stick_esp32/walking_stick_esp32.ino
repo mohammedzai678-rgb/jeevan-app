@@ -40,8 +40,8 @@
  *      "Light has come back. Turning off the light."
  *  - Obstacles: "Obstacle on your right. Take left.", "Obstacle ahead. Take right." ...
  *  - Echo lost right after being very close: "You are touching something ..."
- *  Guidance and sensor readings are sent over Wi-Fi to the cloud; the phone app
- *  speaks obstacle directions. The Serial Monitor remains available for setup.
+ *  Sensor readings are sent to the phone over Bluetooth Low Energy. The phone
+ *  app speaks obstacle directions and can relay readings to the cloud.
  *
  *  SERIAL CALIBRATION COMMANDS (Serial Monitor, line ending "Newline")
  *    b        measure BRIGHT level (keep the LDR in normal room light)
@@ -54,10 +54,12 @@
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
 #include <Preferences.h>
+#include <esp_bt.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include "config.h"
 
 // =============================================================================
@@ -65,7 +67,7 @@
 // =============================================================================
 enum EchoState : uint8_t { ECHO_OK, ECHO_CLEAR, ECHO_NONE };
 enum TurnSignal : uint8_t { TURN_OFF, TURN_LEFT, TURN_RIGHT, TURN_HAZARD };
-struct StickEvent;  // Forward declaration required by Arduino auto-generated prototypes.
+struct Telemetry;
 
 struct UltraSensor {
   const char* name;
@@ -138,17 +140,6 @@ const char* turnSignalName(TurnSignal signal) {
   }
 }
 
-// Event sent to the laptop (queued -> sent by the network task on core 0)
-struct StickEvent {
-  char source[8];        // "stick" or "light"
-  char code[28];
-  char message[112];
-  uint8_t priority;
-  int16_t leftCm, frontCm, rightCm;
-  uint16_t ldrAvg;
-  bool lightOn;
-};
-
 // Latest snapshot for periodic telemetry
 struct Telemetry {
   int16_t leftCm, frontCm, rightCm;
@@ -159,10 +150,19 @@ struct Telemetry {
   bool lightOn;
 };
 
-QueueHandle_t eventQueue = nullptr;
 Telemetry telemetry = {};
 portMUX_TYPE telemetryMux = portMUX_INITIALIZER_UNLOCKED;
 Preferences prefs;
+BLEServer* stickBleServer = nullptr;
+BLECharacteristic* stickBleTelemetryChar = nullptr;
+BLECharacteristic* stickBleCommandChar = nullptr;
+BLECharacteristic* stickBleEventChar = nullptr;
+portMUX_TYPE stickBleMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool stickBleConnected = false;
+volatile bool stickBleTestRequested = false;
+uint32_t lastStickBleNotifyMs = 0;
+bool stickTurnTestActive = false;
+uint32_t stickTurnTestUntilMs = 0;
 
 // LDR state
 uint16_t ldrThreshold  = LDR_DEFAULT_THRESHOLD;
@@ -201,22 +201,122 @@ int16_t cmForReport(const UltraSensor& s) {
   return (int16_t)(s.distanceCm + 0.5f);
 }
 
-void queueEvent(const char* source, const char* code, const char* message, uint8_t priority) {
-  if (!eventQueue) return;
-  StickEvent ev = {};
-  strlcpy(ev.source, source, sizeof(ev.source));
-  strlcpy(ev.code, code, sizeof(ev.code));
-  strlcpy(ev.message, message, sizeof(ev.message));
-  ev.priority = priority;
-  ev.leftCm = cmForReport(sLeft);
-  ev.frontCm = cmForReport(sFront);
-  ev.rightCm = cmForReport(sRight);
-  ev.ldrAvg = ldrAvg;
-  ev.lightOn = lightOn;
-  if (xQueueSend(eventQueue, &ev, 0) != pdTRUE) {
-    StickEvent dropped;                       // queue full: drop the oldest message
-    xQueueReceive(eventQueue, &dropped, 0);
-    xQueueSend(eventQueue, &ev, 0);
+class StickBleServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer*) override {
+    portENTER_CRITICAL(&stickBleMux);
+    stickBleConnected = true;
+    portEXIT_CRITICAL(&stickBleMux);
+    Serial.println("[BLE] Phone connected to walking stick");
+  }
+
+  void onDisconnect(BLEServer* server) override {
+    portENTER_CRITICAL(&stickBleMux);
+    stickBleConnected = false;
+    portEXIT_CRITICAL(&stickBleMux);
+    Serial.println("[BLE] Phone disconnected; restarting advertising");
+    delay(20);
+    server->startAdvertising();
+  }
+};
+
+class StickBleCommandCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    String command = characteristic->getValue().c_str();
+    command.trim();
+    command.toLowerCase();
+    if (command == "test_led") {
+      portENTER_CRITICAL(&stickBleMux);
+      stickBleTestRequested = true;
+      portEXIT_CRITICAL(&stickBleMux);
+      Serial.println("[BLE] Turn-light LED test requested");
+    }
+  }
+};
+
+void stickBleBegin() {
+  esp_bt_mem_release(ESP_BT_MODE_CLASSIC_BT);
+  BLEDevice::init(STICK_BLE_DEVICE_NAME);
+  BLEDevice::setMTU(100);
+
+  stickBleServer = BLEDevice::createServer();
+  stickBleServer->setCallbacks(new StickBleServerCallbacks());
+  BLEService* service = stickBleServer->createService(JEEVAN_BLE_SERVICE_UUID);
+
+  stickBleTelemetryChar = service->createCharacteristic(
+      JEEVAN_BLE_VITALS_CHAR_UUID,
+      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  stickBleTelemetryChar->addDescriptor(new BLE2902());
+
+  stickBleCommandChar = service->createCharacteristic(
+      JEEVAN_BLE_COMMAND_CHAR_UUID,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  stickBleCommandChar->setCallbacks(new StickBleCommandCallbacks());
+
+  stickBleEventChar = service->createCharacteristic(
+      JEEVAN_BLE_EVENT_CHAR_UUID,
+      BLECharacteristic::PROPERTY_NOTIFY);
+  stickBleEventChar->addDescriptor(new BLE2902());
+
+  service->start();
+  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(JEEVAN_BLE_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  Serial.printf("[BLE] Advertising as %s (Jeevan GATT, MTU 100)\n", STICK_BLE_DEVICE_NAME);
+}
+
+bool stickBleIsConnected() {
+  bool connected;
+  portENTER_CRITICAL(&stickBleMux);
+  connected = stickBleConnected;
+  portEXIT_CRITICAL(&stickBleMux);
+  return connected;
+}
+
+const char* directionForTelemetry(const Telemetry& snapshot) {
+  if (strcmp(snapshot.turnLight, "left") == 0) return "left";
+  if (strcmp(snapshot.turnLight, "right") == 0) return "right";
+  if (strcmp(snapshot.turnLight, "hazard") == 0) return "stop";
+  if (strcmp(snapshot.guidance, "clear") == 0 || strcmp(snapshot.guidance, "narrow_path") == 0) return "straight";
+  return "unknown";
+}
+
+void notifyStickBle(uint32_t now) {
+  if (!stickBleIsConnected() || stickBleTelemetryChar == nullptr ||
+      now - lastStickBleNotifyMs < BLE_NOTIFY_INTERVAL_MS) return;
+  lastStickBleNotifyMs = now;
+
+  Telemetry snapshot;
+  portENTER_CRITICAL(&telemetryMux);
+  snapshot = telemetry;
+  portEXIT_CRITICAL(&telemetryMux);
+
+  char payload[320];
+  snprintf(payload, sizeof(payload),
+      "{\"left_cm\":%d,\"front_cm\":%d,\"right_cm\":%d,"
+      "\"left_contact\":%s,\"front_contact\":%s,\"right_contact\":%s,"
+      "\"guidance\":\"%s\",\"recommended_direction\":\"%s\","
+      "\"turn_light\":\"%s\",\"ldr_raw\":%u,\"ldr_avg\":%u,"
+      "\"ldr_threshold\":%u,\"ldr_hysteresis\":%u,\"light_on\":%s,\"uptime_s\":%lu}\n",
+      snapshot.leftCm, snapshot.frontCm, snapshot.rightCm,
+      snapshot.leftContact ? "true" : "false",
+      snapshot.frontContact ? "true" : "false",
+      snapshot.rightContact ? "true" : "false",
+      snapshot.ldrRaw, snapshot.ldrAvg, snapshot.threshold, snapshot.hysteresis,
+      snapshot.lightOn ? "true" : "false", (unsigned long)(millis() / 1000));
+
+  // MTU 100 allows at most 97 bytes per notification. Send one JSON line in
+  // small ordered chunks; the phone app reassembles the line before decoding.
+  const size_t payloadLength = strlen(payload);
+  const size_t chunkSize = 90;
+  for (size_t offset = 0; offset < payloadLength; offset += chunkSize) {
+    const size_t count = (payloadLength - offset < chunkSize)
+        ? payloadLength - offset : chunkSize;
+    stickBleTelemetryChar->setValue((uint8_t*)payload + offset, count);
+    stickBleTelemetryChar->notify();
+    if (offset + count < payloadLength) delay(3);
   }
 }
 
@@ -239,6 +339,28 @@ void updateTelemetry() {
 }
 
 void updateTurnSignals(uint32_t now) {
+  bool testRequested = false;
+  portENTER_CRITICAL(&stickBleMux);
+  testRequested = stickBleTestRequested;
+  stickBleTestRequested = false;
+  portEXIT_CRITICAL(&stickBleMux);
+  if (testRequested) {
+    stickTurnTestActive = true;
+    stickTurnTestUntilMs = now + (TURN_SIGNAL_BLINK_MS * 6);
+    turnBlinkOn = true;
+    lastTurnBlinkMs = now;
+  }
+  if (stickTurnTestActive && now < stickTurnTestUntilMs) {
+    if (now - lastTurnBlinkMs >= TURN_SIGNAL_BLINK_MS) {
+      turnBlinkOn = !turnBlinkOn;
+      lastTurnBlinkMs = now;
+    }
+    digitalWrite(LEFT_TURN_LED_PIN, turnBlinkOn ? HIGH : LOW);
+    digitalWrite(RIGHT_TURN_LED_PIN, turnBlinkOn ? HIGH : LOW);
+    return;
+  }
+  stickTurnTestActive = false;
+
   const TurnSignal requested = turnSignalForGuidance(activeG);
   if (requested != activeTurnSignal) {
     activeTurnSignal = requested;
@@ -263,10 +385,8 @@ void setLight(bool on) {
   digitalWrite(LIGHT_LED_PIN, on ? HIGH : LOW);
   if (on) {
     Serial.printf("LDR Reading: %u -> DARK - LIGHT ON. Agent: \"%s\"\n", ldrRaw, MSG_LIGHT_ON);
-    queueEvent("light", "light_on", MSG_LIGHT_ON, 2);
   } else {
     Serial.printf("LDR Reading: %u -> BRIGHT - LIGHT OFF. Agent: \"%s\"\n", ldrRaw, MSG_LIGHT_OFF);
-    queueEvent("light", "light_off", MSG_LIGHT_OFF, 1);
   }
   updateTelemetry();
 }
@@ -429,7 +549,6 @@ void announce(const Guidance* g, uint32_t now) {
   lastAnnounceMs = now;
   Serial.printf("[STICK] Agent: \"%s\"  (L=%d F=%d R=%d cm)\n", g->message,
                 cmForReport(sLeft), cmForReport(sFront), cmForReport(sRight));
-  queueEvent("stick", g->code, g->message, g->priority);
 }
 
 void updateGuidance(uint32_t now) {
@@ -524,7 +643,7 @@ void handleCommand(char* cmd) {
       break;
     case 's':
       printLdrStatus();
-      Serial.printf("[WIFI] %s\n", WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "not connected");
+      Serial.printf("[BLE] %s\n", stickBleIsConnected() ? "phone connected" : "waiting for phone");
       break;
     default:
       printHelp();
@@ -551,94 +670,6 @@ void pollSerial() {
     cmdBuf[cmdLen] = '\0';
     handleCommand(cmdBuf);
     cmdLen = 0;
-  }
-}
-
-// =============================================================================
-// Network task (core 0): Wi-Fi, events, telemetry. Never blocks the sensors.
-// =============================================================================
-bool postJson(const char* url, const char* body) {
-  if (WiFi.status() != WL_CONNECTED) return false;
-  HTTPClient http;
-  WiFiClient plain;
-  WiFiClientSecure secure;
-  http.setConnectTimeout(2500);
-  http.setTimeout(3000);
-  if (String(url).startsWith("https")) {
-    secure.setInsecure();
-    if (!http.begin(secure, url)) return false;
-  } else {
-    if (!http.begin(plain, url)) return false;
-  }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.POST((uint8_t*)body, strlen(body));
-  http.end();
-  return code > 0 && code < 300;
-}
-
-void postEvent(const StickEvent& ev) {
-  char body[480];
-  snprintf(body, sizeof(body),
-           "{\"device_id\":\"%s\",\"api_key\":\"%s\",\"source\":\"%s\",\"code\":\"%s\","
-           "\"message\":\"%s\",\"priority\":%u,\"data\":{\"left_cm\":%d,\"front_cm\":%d,"
-           "\"right_cm\":%d,\"ldr_avg\":%u,\"light_on\":%s}}",
-           DEVICE_ID, DEVICE_API_KEY, ev.source, ev.code, ev.message, (unsigned)ev.priority,
-           ev.leftCm, ev.frontCm, ev.rightCm, (unsigned)ev.ldrAvg, ev.lightOn ? "true" : "false");
-  if (!postJson(STICK_EVENT_URL, body)) Serial.println("[WIFI] event not delivered (server unreachable)");
-}
-
-void postTelemetry() {
-  Telemetry t;
-  portENTER_CRITICAL(&telemetryMux);
-  t = telemetry;
-  portEXIT_CRITICAL(&telemetryMux);
-
-  char body[700];
-  snprintf(body, sizeof(body),
-           "{\"device_id\":\"%s\",\"api_key\":\"%s\",\"data\":{"
-           "\"left_cm\":%d,\"front_cm\":%d,\"right_cm\":%d,"
-           "\"left_contact\":%s,\"front_contact\":%s,\"right_contact\":%s,"
-           "\"guidance\":\"%s\",\"turn_light\":\"%s\",\"ldr_raw\":%u,\"ldr_avg\":%u,\"ldr_threshold\":%u,"
-           "\"ldr_hysteresis\":%u,\"light_on\":%s,\"rssi\":%d,\"uptime_s\":%lu}}",
-           DEVICE_ID, DEVICE_API_KEY, t.leftCm, t.frontCm, t.rightCm,
-           t.leftContact ? "true" : "false", t.frontContact ? "true" : "false",
-           t.rightContact ? "true" : "false", t.guidance, t.turnLight, (unsigned)t.ldrRaw, (unsigned)t.ldrAvg,
-           (unsigned)t.threshold, (unsigned)t.hysteresis, t.lightOn ? "true" : "false",
-           (int)WiFi.RSSI(), (unsigned long)(millis() / 1000));
-  postJson(STICK_TELEMETRY_URL, body);
-}
-
-void networkTask(void*) {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  uint32_t lastAttempt = millis();
-  uint32_t lastTelemetryMs = 0;
-  bool wasConnected = false;
-
-  for (;;) {
-    bool connected = WiFi.status() == WL_CONNECTED;
-    if (connected && !wasConnected) {
-      Serial.printf("[WIFI] Connected to %s, IP %s -> server %s\n", WIFI_SSID,
-                    WiFi.localIP().toString().c_str(), BACKEND_BASE_URL);
-    } else if (!connected && wasConnected) {
-      Serial.println("[WIFI] Connection lost - retrying (light + sensors keep working)");
-    }
-    wasConnected = connected;
-
-    if (!connected && millis() - lastAttempt > 10000) {
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-      lastAttempt = millis();
-    }
-
-    StickEvent ev;
-    if (xQueueReceive(eventQueue, &ev, pdMS_TO_TICKS(50)) == pdTRUE && connected) {
-      postEvent(ev);
-    }
-    if (connected && millis() - lastTelemetryMs >= TELEMETRY_INTERVAL_MS) {
-      lastTelemetryMs = millis();
-      postTelemetry();
-    }
   }
 }
 
@@ -677,12 +708,8 @@ void setup() {
     prefs.putUShort("thr", 100);
   }
 
-  eventQueue = xQueueCreate(8, sizeof(StickEvent));
-  if (ENABLE_WIFI) {
-    xTaskCreatePinnedToCore(networkTask, "network", 8192, nullptr, 1, nullptr, 0);
-  } else {
-    Serial.println("[WIFI] Disabled in config.h - running offline");
-  }
+  stickBleBegin();
+  Serial.println("[BLE] Bluetooth-only mode; phone relays telemetry to the cloud.");
 
   // Initial light state: instant check exactly like test code
   int initialLight = analogRead(LDR_PIN);
@@ -701,5 +728,6 @@ void loop() {
   updateLight(now);
   updateUltrasonic(now);
   updateTurnSignals(millis());
+  notifyStickBle(millis());
   delay(2);
 }

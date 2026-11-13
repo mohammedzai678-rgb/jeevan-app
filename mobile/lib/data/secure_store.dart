@@ -48,6 +48,11 @@ class SecureStore {
   Future<void> setLastBleId(String? v) async =>
       v == null ? _prefs.remove('ble_id') : _prefs.setString('ble_id', v);
 
+  String? get lastStickBleId => _prefs.getString('stick_ble_id');
+  Future<void> setLastStickBleId(String? v) async => v == null
+      ? _prefs.remove('stick_ble_id')
+      : _prefs.setString('stick_ble_id', v);
+
   String? get lastDeviceId => _prefs.getString('device_id');
   Future<void> setLastDeviceId(String? v) async =>
       v == null ? _prefs.remove('device_id') : _prefs.setString('device_id', v);

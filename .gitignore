@@ -28,5 +28,3 @@ mobile/.idea/
 # OS / editor noise
 .DS_Store
 Thumbs.db
-# Jeevan sync: 2026-11-13
-firmware/walking_stick_esp32/config.h

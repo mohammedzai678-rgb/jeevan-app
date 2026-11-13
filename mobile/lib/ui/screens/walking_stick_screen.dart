@@ -3,11 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../core/theme.dart';
 import '../../data/api_client.dart';
 import '../../data/live_service.dart';
 import '../../data/medication_reminder_service.dart';
+import '../../data/stick_ble_service.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
 
@@ -20,12 +22,23 @@ class WalkingStickScreen extends ConsumerStatefulWidget {
 
 class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   Timer? _pollTimer;
+  Timer? _stickRelayTimer;
   StreamSubscription<LiveEvent>? _stickEvents;
+  StreamSubscription<Position>? _phoneLocation;
+  StreamSubscription<StickBleState>? _stickBleStateSub;
+  StreamSubscription<List<StickBleDevice>>? _stickBleFoundSub;
+  StreamSubscription<Map<String, dynamic>>? _stickBleTelemetrySub;
   bool _loading = true;
   bool _busyAction = false;
   bool _pairingStick = false;
   bool _stickPaired = true;
+  bool _startingPhoneLocation = false;
+  bool _stickRelayInFlight = false;
+  Map<String, dynamic>? _pendingStickRelay;
   String? _error;
+  String _personLocationStatus = 'Starting phone GPS…';
+  StickBleState _stickBleState = StickBleState.idle;
+  List<StickBleDevice> _stickBleDevices = const [];
 
   Map<String, dynamic> _status = const {};
   bool _geofenceDirty = false;
@@ -38,7 +51,22 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   @override
   void initState() {
     super.initState();
-    unawaited(_fetchStatus());
+    unawaited(_fetchStatus().then((_) => _startPhoneLocation()));
+    final stickBle = ref.read(stickBleProvider);
+    _stickBleState = stickBle.current;
+    _stickBleStateSub = stickBle.state.listen((state) {
+      final wasConnected = _stickBleState == StickBleState.connected;
+      if (!mounted) return;
+      setState(() => _stickBleState = state);
+      if (state == StickBleState.idle && wasConnected) {
+        unawaited(_fetchStatus(silent: true));
+      }
+    });
+    _stickBleFoundSub = stickBle.found.listen((devices) {
+      if (mounted) setState(() => _stickBleDevices = devices);
+    });
+    _stickBleTelemetrySub = stickBle.telemetry.listen(_onDirectStickTelemetry);
+    unawaited(stickBle.autoConnect());
     _stickEvents = ref.read(liveProvider).events.listen((event) {
       if (!mounted || event is! StickChanged) return;
       _onStickSnapshot(event.snapshot);
@@ -55,7 +83,17 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
     final data =
         (snapshot['data'] as Map?)?.cast<String, dynamic>() ?? const {};
     final serverPrompt = data['voice_prompt'];
-    if (serverPrompt is String && serverPrompt.trim().isNotEmpty) {
+    final hasSensorData = const [
+      'left_cm',
+      'front_cm',
+      'right_cm',
+      'left_contact',
+      'front_contact',
+      'right_contact',
+    ].any((key) => key.endsWith('_cm') ? data[key] is num : data[key] == true);
+    if (!hasSensorData &&
+        serverPrompt is String &&
+        serverPrompt.trim().isNotEmpty) {
       return serverPrompt.trim();
     }
     double? cm(String key) {
@@ -76,6 +114,7 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
     final frontBlocked = blocked('front_cm', 'front_contact');
     final rightBlocked = blocked('right_cm', 'right_contact');
     final leftClear = clear('left_cm', 'left_contact');
+    final frontClear = clear('front_cm', 'front_contact');
     final rightClear = clear('right_cm', 'right_contact');
 
     if (frontBlocked) {
@@ -88,19 +127,23 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
       }
       if (leftClear) return 'Obstacle ahead. Go left.';
       if (rightClear) return 'Obstacle ahead. Go right.';
-      return 'Stop. The path ahead is blocked.';
+      return 'Stop. Turn back slowly.';
+    }
+    if (leftBlocked && rightBlocked) {
+      return frontClear
+          ? 'Both sides are blocked. Continue straight carefully.'
+          : 'Stop. Turn back slowly.';
     }
     if (rightBlocked && !leftBlocked) {
       return leftClear
           ? 'Obstacle on your right. Go left.'
-          : 'Stop. Obstacle on your right.';
+          : 'Stop. Turn back slowly.';
     }
     if (leftBlocked && !rightBlocked) {
       return rightClear
           ? 'Obstacle on your left. Go right.'
-          : 'Stop. Obstacle on your left.';
+          : 'Stop. Turn back slowly.';
     }
-    if (leftBlocked && rightBlocked) return 'Stop. Obstacles on both sides.';
     return null;
   }
 
@@ -121,14 +164,109 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   int _matchingGuidanceFrames = 0;
   String? _lastAnnouncedGuidance;
 
-  void _onStickSnapshot(Map<String, dynamic> snapshot) {
+  void _onStickSnapshot(Map<String, dynamic> snapshot,
+      {bool markPaired = true}) {
     setState(() {
       _status = snapshot;
       _loading = false;
       _error = null;
-      _stickPaired = true;
+      if (markPaired) _stickPaired = true;
     });
     _announceGuidance(snapshot);
+  }
+
+  void _onDirectStickTelemetry(Map<String, dynamic> telemetry) {
+    if (!mounted) return;
+    _queueStickTelemetryRelay(telemetry);
+    final currentData = (_status['data'] as Map?)?.cast<String, dynamic>() ??
+        const <String, dynamic>{};
+    _onStickSnapshot(
+      {
+        ..._status,
+        'online': true,
+        'age_ms': 0,
+        'link_mode': 'bluetooth',
+        'data': {...currentData, ...telemetry},
+      },
+      markPaired: false,
+    );
+  }
+
+  void _queueStickTelemetryRelay(Map<String, dynamic> telemetry) {
+    _pendingStickRelay = Map<String, dynamic>.from(telemetry);
+    if (!_stickPaired || _stickRelayInFlight || _stickRelayTimer != null)
+      return;
+    _stickRelayTimer = Timer(const Duration(seconds: 1), () {
+      _stickRelayTimer = null;
+      unawaited(_flushStickTelemetryRelay());
+    });
+  }
+
+  Future<void> _flushStickTelemetryRelay() async {
+    if (!mounted || !_stickPaired || _stickRelayInFlight) return;
+    final telemetry = _pendingStickRelay;
+    if (telemetry == null) return;
+    _pendingStickRelay = null;
+    _stickRelayInFlight = true;
+    var retryDelay = const Duration(seconds: 1);
+    try {
+      await ref.read(apiProvider).relayStickBluetoothTelemetry(telemetry);
+    } catch (_) {
+      // Local Bluetooth readings and voice guidance keep working offline.
+      retryDelay = const Duration(seconds: 5);
+    } finally {
+      _stickRelayInFlight = false;
+      if (mounted && _pendingStickRelay != null && _stickRelayTimer == null) {
+        _stickRelayTimer = Timer(retryDelay, () {
+          _stickRelayTimer = null;
+          unawaited(_flushStickTelemetryRelay());
+        });
+      }
+    }
+  }
+
+  Future<void> _scanStickBluetooth() async {
+    try {
+      await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+      await ref.read(stickBleProvider).scan();
+    } catch (error) {
+      if (mounted)
+        showSnack(context, 'Walking-stick Bluetooth scan failed: $error',
+            error: true);
+    }
+  }
+
+  Future<void> _connectStickBluetooth(String id) async {
+    try {
+      await ref.read(stickBleProvider).connect(id);
+      if (mounted)
+        showSnack(context, 'Walking stick connected over Bluetooth.');
+    } catch (error) {
+      if (mounted)
+        showSnack(context, 'Walking-stick Bluetooth connection failed: $error',
+            error: true);
+    }
+  }
+
+  Future<void> _disconnectStickBluetooth() async {
+    await ref.read(stickBleProvider).disconnect();
+    if (mounted)
+      showSnack(context, 'Walking stick disconnected from Bluetooth.');
+  }
+
+  Future<void> _testStickTurnLights() async {
+    try {
+      await ref.read(stickBleProvider).sendCommand('test_led');
+      if (mounted)
+        showSnack(context, 'Three turn-light test flashes sent to the stick.');
+    } catch (error) {
+      if (mounted)
+        showSnack(context, 'Turn-light test failed: $error', error: true);
+    }
   }
 
   void _announceGuidance(Map<String, dynamic> snapshot) {
@@ -154,8 +292,113 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _stickRelayTimer?.cancel();
     _stickEvents?.cancel();
+    _stickBleStateSub?.cancel();
+    _stickBleFoundSub?.cancel();
+    _stickBleTelemetrySub?.cancel();
+    _phoneLocation?.cancel();
     super.dispose();
+  }
+
+  Future<void> _startPhoneLocation({bool openSettingsIfNeeded = false}) async {
+    if (_phoneLocation != null || _startingPhoneLocation || !mounted) return;
+    if (!_stickPaired) {
+      setState(() =>
+          _personLocationStatus = 'Pair the stick to enable person location.');
+      return;
+    }
+    _startingPhoneLocation = true;
+    setState(() => _personLocationStatus = 'Checking phone location…');
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        if (mounted) {
+          setState(() => _personLocationStatus =
+              'Turn on phone Location to track the person.');
+        }
+        if (openSettingsIfNeeded) await Geolocator.openLocationSettings();
+        return;
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          setState(() =>
+              _personLocationStatus = 'Allow Location in phone app settings.');
+        }
+        if (openSettingsIfNeeded) await Geolocator.openAppSettings();
+        return;
+      }
+      if (permission == LocationPermission.denied) {
+        if (mounted) {
+          setState(() =>
+              _personLocationStatus = 'Phone location permission is needed.');
+        }
+        return;
+      }
+
+      final initial = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+      await _uploadPersonPosition(initial);
+      if (!mounted) return;
+      _phoneLocation = Geolocator.getPositionStream(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 5,
+        ),
+      ).listen(
+        (position) => unawaited(_uploadPersonPosition(position)),
+        onError: (Object error) {
+          if (mounted) {
+            setState(() => _personLocationStatus = 'Phone GPS paused: $error');
+          }
+        },
+      );
+      setState(
+          () => _personLocationStatus = 'Phone GPS is tracking the person.');
+    } catch (error) {
+      if (mounted) {
+        setState(() => _personLocationStatus = 'Phone GPS unavailable: $error');
+      }
+    } finally {
+      _startingPhoneLocation = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _uploadPersonPosition(Position position) async {
+    try {
+      final response = await ref.read(apiProvider).updateStickPersonLocation(
+            lat: position.latitude,
+            lng: position.longitude,
+            accuracyM: position.accuracy.isFinite ? position.accuracy : null,
+            speedKmh: position.speed.isFinite
+                ? (position.speed * 3.6).clamp(0.0, 300.0).toDouble()
+                : null,
+            heading: position.heading.isFinite && position.heading >= 0
+                ? position.heading.clamp(0.0, 360.0).toDouble()
+                : null,
+          );
+      if (!mounted) return;
+      final data = (response['data'] as Map?)?.cast<String, dynamic>();
+      if (data != null) {
+        setState(() {
+          _status = {..._status, 'data': data};
+          _personLocationStatus = 'Phone GPS is tracking the person.';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _personLocationStatus =
+            'Phone GPS active • cloud update failed: $error');
+      }
+    }
   }
 
   Future<void> _fetchStatus({bool silent = false}) async {
@@ -293,6 +536,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
         _centerLng = position.longitude;
         _geofenceDirty = true;
       });
+      await _uploadPersonPosition(position);
+      unawaited(_startPhoneLocation());
       showSnack(context,
           'Phone GPS set as the safe-zone center. Save the geofence to apply it.');
     } catch (e) {
@@ -310,6 +555,7 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
       if (!mounted) return;
       setState(() => _stickPaired = true);
       await _fetchStatus();
+      await _startPhoneLocation();
       if (mounted) showSnack(context, 'Walking stick paired to this account.');
     } catch (e) {
       if (mounted)
@@ -390,6 +636,9 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   @override
   Widget build(BuildContext context) {
     final online = _status['online'] == true;
+    final stickBluetoothConnected = _stickBleState == StickBleState.connected;
+    final stickBluetoothBusy = _stickBleState == StickBleState.scanning ||
+        _stickBleState == StickBleState.connecting;
     final deviceId =
         (_status['device_id'] as String?) ?? 'esp32_walking_stick_01';
     final data = (_status['data'] as Map?)?.cast<String, dynamic>() ?? const {};
@@ -613,20 +862,150 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                             size: 16, color: Palette.teal),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: Text(
-                            hasLocation
-                                ? '$address (${lat?.toStringAsFixed(5)}, ${lng?.toStringAsFixed(5)})'
-                                : 'GPS fix unavailable • No location received',
-                            style: const TextStyle(
-                              color: Palette.text,
-                              fontSize: 12,
-                              fontFeatures: kTabular,
-                            ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                hasLocation
+                                    ? '$address (${lat?.toStringAsFixed(5)}, ${lng?.toStringAsFixed(5)})'
+                                    : 'Phone GPS fix unavailable',
+                                style: const TextStyle(
+                                  color: Palette.text,
+                                  fontSize: 12,
+                                  fontFeatures: kTabular,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                _personLocationStatus,
+                                style: const TextStyle(
+                                  color: Palette.textDim,
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
+                        if (_phoneLocation == null && _stickPaired) ...[
+                          const SizedBox(width: 8),
+                          IconButton(
+                            tooltip: 'Enable phone GPS for person location',
+                            onPressed: _startingPhoneLocation
+                                ? null
+                                : () => _startPhoneLocation(
+                                    openSettingsIfNeeded: true),
+                            icon: const Icon(Icons.gps_fixed_rounded,
+                                color: Palette.teal),
+                          ),
+                        ],
                       ],
                     ),
                   ),
+                ],
+              ),
+            ),
+
+            SectionHeader(
+              'Direct Bluetooth • Walking Stick',
+              action: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: (stickBluetoothConnected
+                          ? Palette.green
+                          : Palette.textDim)
+                      .withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  stickBluetoothConnected
+                      ? 'CONNECTED'
+                      : 'BLE ${_stickBleState.name.toUpperCase()}',
+                  style: TextStyle(
+                    color: stickBluetoothConnected
+                        ? Palette.green
+                        : Palette.textDim,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+            GlassCard(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.bluetooth_connected_rounded,
+                          color: Palette.teal, size: 22),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          stickBluetoothConnected
+                              ? 'Live readings from ${ref.read(stickBleProvider).connectedName ?? 'Jeevan-Stick'}'
+                              : stickBluetoothBusy
+                                  ? 'Searching or connecting to Jeevan-Stick…'
+                                  : 'Pair the stick directly for fast live readings.',
+                          style: const TextStyle(
+                            color: Palette.text,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: stickBluetoothBusy || stickBluetoothConnected
+                            ? null
+                            : _scanStickBluetooth,
+                        icon: const Icon(Icons.search_rounded, size: 16),
+                        label: Text(_stickBleState == StickBleState.scanning
+                            ? 'Scanning…'
+                            : 'Scan'),
+                      ),
+                    ],
+                  ),
+                  if (stickBluetoothConnected) ...[
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: _testStickTurnLights,
+                          icon: const Icon(Icons.flash_on_rounded, size: 16),
+                          label: const Text('Test turn lights'),
+                        ),
+                        TextButton.icon(
+                          onPressed: _disconnectStickBluetooth,
+                          icon: const Icon(Icons.link_off_rounded, size: 16),
+                          label: const Text('Disconnect'),
+                        ),
+                      ],
+                    ),
+                  ] else if (_stickBleDevices.isNotEmpty) ...[
+                    const Divider(height: 18),
+                    for (final device in _stickBleDevices)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.elderly_rounded,
+                            color: Palette.teal),
+                        title: Text(device.name),
+                        subtitle: Text('${device.id} • ${device.rssi} dBm'),
+                        trailing: FilledButton.tonal(
+                          onPressed: stickBluetoothBusy
+                              ? null
+                              : () => _connectStickBluetooth(device.id),
+                          child: const Text('Connect'),
+                        ),
+                      ),
+                  ] else if (!stickBluetoothBusy) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Power on the stick ESP32 and tap Scan. The VitaWatch remains on its own Bluetooth connection.',
+                      style: TextStyle(color: Palette.textDim, fontSize: 11),
+                    ),
+                  ],
                 ],
               ),
             ),

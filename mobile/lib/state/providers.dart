@@ -18,6 +18,7 @@ import '../data/live_service.dart';
 import '../data/medication_reminder_service.dart';
 import '../data/models.dart';
 import '../data/secure_store.dart';
+import '../data/stick_ble_service.dart';
 import '../data/supabase_service.dart';
 import '../data/sse.dart';
 
@@ -34,6 +35,11 @@ final liveProvider = Provider<LiveService>(
     (ref) => LiveService(ref.watch(apiProvider), ref.watch(authProvider)));
 final bleProvider =
     Provider<BleService>((ref) => BleService(ref.watch(storeProvider)));
+final stickBleProvider = Provider<StickBleService>((ref) {
+  final service = StickBleService(ref.watch(storeProvider));
+  ref.onDispose(() => unawaited(service.dispose()));
+  return service;
+});
 
 // ── Streams ──────────────────────────────────────────────────────────────────────────────────────
 final sessionProvider = StreamProvider<Session?>((ref) async* {
@@ -55,6 +61,13 @@ final bleStateProvider = StreamProvider<BleState>((ref) async* {
 });
 final bleScanProvider =
     StreamProvider<List<BleDevice>>((ref) => ref.watch(bleProvider).found);
+final stickBleStateProvider = StreamProvider<StickBleState>((ref) async* {
+  final stick = ref.watch(stickBleProvider);
+  yield stick.current;
+  yield* stick.state;
+});
+final stickBleScanProvider = StreamProvider<List<StickBleDevice>>(
+    (ref) => ref.watch(stickBleProvider).found);
 
 // ── Devices + live vitals ────────────────────────────────────────────────────────────────────────
 /// How long a BLE sample outranks a cloud sample for the same metric.

@@ -203,8 +203,26 @@ class ApiClient {
   // ── Smart Walking Stick (ESP32 #2) & Geofence ─────────────────────────────
   Future<Map<String, dynamic>> stickStatus() =>
       _send('GET', '/api/stick/status');
+  Future<Map<String, dynamic>> relayStickBluetoothTelemetry(
+          Map<String, dynamic> telemetry) =>
+      _send('POST', '/api/stick/telemetry/app', body: {'data': telemetry});
   Future<Map<String, dynamic>> stickGeofence() =>
       _send('GET', '/api/stick/geofence');
+  Future<Map<String, dynamic>> updateStickPersonLocation({
+    required double lat,
+    required double lng,
+    double? accuracyM,
+    double? speedKmh,
+    double? heading,
+  }) =>
+      _send('POST', '/api/stick/location', body: {
+        'lat': lat,
+        'lng': lng,
+        'tracking_mode': 'phone_gps',
+        if (accuracyM != null) 'accuracy_m': accuracyM,
+        if (speedKmh != null) 'speed_kmh': speedKmh,
+        if (heading != null) 'heading': heading,
+      });
   Future<Map<String, dynamic>> updateStickGeofence({
     required bool enabled,
     required double? centerLat,
