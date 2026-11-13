@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import '../../core/theme.dart';
+import '../../data/ble_service.dart';
 import '../../data/models.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
@@ -26,14 +27,30 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
 
   Future<void> _captureWatchSnapshot() async {
     if (_snapshotBusy) return;
-    final deviceId = ref.read(devicesProvider).selected ?? 'esp32_jeevancare_01';
+    final ble = ref.read(bleProvider);
+    final watch = ref.read(devicesProvider).bleWatch;
+    if (ble.current != BleState.connected ||
+        watch == null ||
+        watch.vitals.isEmpty) {
+      showSnack(context, 'Connect VitaWatch and wait for a reading first.',
+          error: true);
+      return;
+    }
     setState(() => _snapshotBusy = true);
     try {
-      await ref.read(apiProvider).recordDeviceSnapshot(deviceId);
+      await ref.read(apiProvider).saveBleReading(
+            deviceId: watch.deviceId,
+            heartRate: watch.vitals.heartRate,
+            spo2: watch.vitals.spo2,
+            temperature: watch.vitals.temperature,
+          );
       ref.invalidate(historyProvider);
-      if (mounted) showSnack(context, 'Recorded live VitaWatch ($deviceId) snapshot to cloud history!');
+      if (mounted)
+        showSnack(context, 'Saved latest VitaWatch readings to your history.');
     } catch (e) {
-      if (mounted) showSnack(context, 'Could not snapshot device reading: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Could not snapshot device reading: $e',
+            error: true);
     } finally {
       if (mounted) setState(() => _snapshotBusy = false);
     }
@@ -42,18 +59,28 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   Future<void> _generateAiVitalsReport(List<Reading> readings) async {
     if (_aiReportBusy) return;
     final latest = readings.isNotEmpty ? readings.first : null;
+    if (latest?.heartRate == null ||
+        latest?.spo2 == null ||
+        latest?.temperature == null) {
+      showSnack(context,
+          'Save a complete heart rate, SpO₂, and temperature sample before running the AI report.',
+          error: true);
+      return;
+    }
     setState(() => _aiReportBusy = true);
     try {
       final res = await ref.read(apiProvider).vitalsReport(
-            hr: latest?.heartRate ?? 76,
-            spo2: latest?.spo2 ?? 98,
+            hr: latest!.heartRate!,
+            spo2: latest!.spo2!,
             sys: 122,
             dia: 78,
-            temp: latest?.temperature ?? 36.7,
+            temp: latest!.temperature!,
           );
       if (mounted) setState(() => _aiVitalsReport = res);
     } catch (e) {
-      if (mounted) showSnack(context, 'Could not generate AI vitals report: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Could not generate AI vitals report: $e',
+            error: true);
     } finally {
       if (mounted) setState(() => _aiReportBusy = false);
     }
@@ -66,7 +93,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
       ref.invalidate(historyProvider);
       if (mounted) showSnack(context, 'Deleted vital reading.');
     } catch (e) {
-      if (mounted) showSnack(context, 'Could not delete reading: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Could not delete reading: $e', error: true);
     }
   }
 
@@ -101,7 +129,10 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
             const Expanded(
               child: Text(
                 'Triage Analysis',
-                style: TextStyle(color: Palette.text, fontSize: 18, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.text,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700),
               ),
             ),
             StatusPill(a.overallStatus),
@@ -114,12 +145,18 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
             children: [
               Text(
                 a.summary,
-                style: const TextStyle(color: Palette.text, fontSize: 14.5, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                    color: Palette.text,
+                    fontSize: 14.5,
+                    fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 8),
               Text(
                 'Risk Score: ${a.riskScore} / 100',
-                style: const TextStyle(color: Palette.textDim, fontSize: 13, fontFeatures: kTabular),
+                style: const TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 13,
+                    fontFeatures: kTabular),
               ),
               if (a.redFlags.isNotEmpty) ...[
                 const SizedBox(height: 12),
@@ -128,12 +165,16 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     padding: const EdgeInsets.only(bottom: 4),
                     child: Row(
                       children: [
-                        const Icon(Icons.warning_amber_rounded, size: 16, color: Palette.red),
+                        const Icon(Icons.warning_amber_rounded,
+                            size: 16, color: Palette.red),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
                             rf,
-                            style: const TextStyle(color: Palette.red, fontSize: 13, fontWeight: FontWeight.w600),
+                            style: const TextStyle(
+                                color: Palette.red,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600),
                           ),
                         ),
                       ],
@@ -147,7 +188,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(
                       '• ${f.metric} (${f.value}): ${f.explanation} ${f.recommendation}',
-                      style: const TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.4),
+                      style: const TextStyle(
+                          color: Palette.textDim, fontSize: 12.5, height: 1.4),
                     ),
                   ),
               ],
@@ -185,10 +227,12 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
         backgroundColor: Palette.teal,
         foregroundColor: const Color(0xFF042F2A),
         icon: const Icon(Icons.add_chart_rounded),
-        label: const Text('Record Manual Vitals', style: TextStyle(fontWeight: FontWeight.w700)),
+        label: const Text('Record Manual Vitals',
+            style: TextStyle(fontWeight: FontWeight.w700)),
       ),
       body: asyncReadings.when(
-        loading: () => const Center(child: CircularProgressIndicator(color: Palette.teal)),
+        loading: () =>
+            const Center(child: CircularProgressIndicator(color: Palette.teal)),
         error: (e, _) => Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
@@ -234,35 +278,42 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         const Expanded(
                           child: Text(
                             'Trend Chart',
-                            style: TextStyle(color: Palette.text, fontSize: 16, fontWeight: FontWeight.w700),
+                            style: TextStyle(
+                                color: Palette.text,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700),
                           ),
                         ),
                         _MetricChip(
                           label: 'HR',
                           selected: _metric == _TrendMetric.heartRate,
                           color: Palette.red,
-                          onTap: () => setState(() => _metric = _TrendMetric.heartRate),
+                          onTap: () =>
+                              setState(() => _metric = _TrendMetric.heartRate),
                         ),
                         const SizedBox(width: 6),
                         _MetricChip(
                           label: 'SpO₂',
                           selected: _metric == _TrendMetric.spo2,
                           color: Palette.teal,
-                          onTap: () => setState(() => _metric = _TrendMetric.spo2),
+                          onTap: () =>
+                              setState(() => _metric = _TrendMetric.spo2),
                         ),
                         const SizedBox(width: 6),
                         _MetricChip(
                           label: 'Temp',
                           selected: _metric == _TrendMetric.temperature,
                           color: Palette.amber,
-                          onTap: () => setState(() => _metric = _TrendMetric.temperature),
+                          onTap: () => setState(
+                              () => _metric = _TrendMetric.temperature),
                         ),
                       ],
                     ),
                     const SizedBox(height: 18),
                     SizedBox(
                       height: 190,
-                      child: _TrendLineChart(readings: chronological, metric: _metric),
+                      child: _TrendLineChart(
+                          readings: chronological, metric: _metric),
                     ),
                   ],
                 ),
@@ -273,16 +324,23 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                   Expanded(
                     child: OutlinedButton.icon(
                       onPressed: _snapshotBusy ? null : _captureWatchSnapshot,
-                      icon: const Icon(Icons.watch_rounded, size: 17, color: Palette.teal),
-                      label: Text(_snapshotBusy ? 'Snapshotting…' : 'Snapshot Watch'),
+                      icon: const Icon(Icons.watch_rounded,
+                          size: 17, color: Palette.teal),
+                      label: Text(_snapshotBusy
+                          ? 'Saving…'
+                          : 'Save Latest Watch Reading'),
                     ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: FilledButton.tonalIcon(
-                      onPressed: _aiReportBusy ? null : () => _generateAiVitalsReport(readings),
-                      icon: const Icon(Icons.auto_awesome_rounded, size: 17, color: Palette.blue),
-                      label: Text(_aiReportBusy ? 'Analyzing…' : 'AI Vitals Report'),
+                      onPressed: _aiReportBusy
+                          ? null
+                          : () => _generateAiVitalsReport(readings),
+                      icon: const Icon(Icons.auto_awesome_rounded,
+                          size: 17, color: Palette.blue),
+                      label: Text(
+                          _aiReportBusy ? 'Analyzing…' : 'AI Vitals Report'),
                     ),
                   ),
                 ],
@@ -297,18 +355,23 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                     children: [
                       const Row(
                         children: [
-                          Icon(Icons.analytics_rounded, color: Palette.blue, size: 18),
+                          Icon(Icons.analytics_rounded,
+                              color: Palette.blue, size: 18),
                           SizedBox(width: 8),
                           Text(
                             'AI Clinical Vitals Synthesis (/api/gemini/vitals-report)',
-                            style: TextStyle(color: Palette.text, fontSize: 13.5, fontWeight: FontWeight.w800),
+                            style: TextStyle(
+                                color: Palette.text,
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w800),
                           ),
                         ],
                       ),
                       const SizedBox(height: 8),
                       Text(
                         '${_aiVitalsReport!['summary'] ?? _aiVitalsReport!['response'] ?? _aiVitalsReport!['assessment'] ?? 'Hemodynamic and respiratory parameters evaluated within expected range.'}',
-                        style: const TextStyle(color: Palette.text, fontSize: 13, height: 1.4),
+                        style: const TextStyle(
+                            color: Palette.text, fontSize: 13, height: 1.4),
                       ),
                     ],
                   ),
@@ -318,7 +381,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
               SectionHeader('Recorded Readings (${readings.length})'),
               for (final r in readings) ...[
                 GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                   child: Row(
                     children: [
                       Expanded(
@@ -339,11 +403,21 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                               spacing: 14,
                               runSpacing: 4,
                               children: [
-                                _ReadingStat(label: 'HR', value: '${r.heartRate} BPM', color: Palette.red),
-                                _ReadingStat(label: 'SpO₂', value: '${r.spo2}%', color: Palette.teal),
+                                _ReadingStat(
+                                    label: 'HR',
+                                    value: r.heartRate == null
+                                        ? '—'
+                                        : '${r.heartRate} BPM',
+                                    color: Palette.red),
+                                _ReadingStat(
+                                    label: 'SpO₂',
+                                    value: r.spo2 == null ? '—' : '${r.spo2}%',
+                                    color: Palette.teal),
                                 _ReadingStat(
                                   label: 'Temp',
-                                  value: '${r.temperature.toStringAsFixed(1)} °C',
+                                  value: r.temperature == null
+                                      ? '—'
+                                      : '${r.temperature!.toStringAsFixed(1)} °C',
                                   color: Palette.amber,
                                 ),
                               ],
@@ -356,7 +430,8 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                         IconButton(
                           tooltip: 'Delete Reading',
                           onPressed: () => _deleteReading(r.id),
-                          icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Palette.red),
+                          icon: const Icon(Icons.delete_outline_rounded,
+                              size: 18, color: Palette.red),
                         ),
                     ],
                   ),
@@ -409,7 +484,8 @@ class _MetricChip extends StatelessWidget {
 }
 
 class _ReadingStat extends StatelessWidget {
-  const _ReadingStat({required this.label, required this.value, required this.color});
+  const _ReadingStat(
+      {required this.label, required this.value, required this.color});
 
   final String label;
   final String value;
@@ -420,7 +496,10 @@ class _ReadingStat extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
         Text(
           '$label ',
@@ -451,19 +530,20 @@ class _TrendLineChart extends StatelessWidget {
     final spots = <FlSpot>[];
     for (var i = 0; i < readings.length; i++) {
       final r = readings[i];
-      final y = switch (metric) {
-        _TrendMetric.heartRate => r.heartRate.toDouble(),
-        _TrendMetric.spo2 => r.spo2.toDouble(),
+      final double? y = switch (metric) {
+        _TrendMetric.heartRate => r.heartRate?.toDouble(),
+        _TrendMetric.spo2 => r.spo2?.toDouble(),
         _TrendMetric.temperature => r.temperature,
       };
-      if (y > 0) {
+      if (y != null && y > 0) {
         spots.add(FlSpot(i.toDouble(), y));
       }
     }
 
     if (spots.isEmpty) {
       return const Center(
-        child: Text('Not enough data points', style: TextStyle(color: Palette.textDim)),
+        child: Text('Not enough data points',
+            style: TextStyle(color: Palette.textDim)),
       );
     }
 
@@ -548,7 +628,9 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
     final dia = int.tryParse(_diaCtrl.text.trim());
 
     if (hr == null || spo2 == null || temp == null) {
-      showSnack(context, 'Enter valid Heart Rate, SpO₂, and Temperature values.', error: true);
+      showSnack(
+          context, 'Enter valid Heart Rate, SpO₂, and Temperature values.',
+          error: true);
       return;
     }
 
@@ -566,7 +648,8 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
         widget.onRecorded(analysis);
       }
     } catch (e) {
-      if (mounted) showSnack(context, 'Failed to record vitals: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Failed to record vitals: $e', error: true);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -595,7 +678,10 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
             const SizedBox(height: 16),
             const Text(
               'Record Manual Vitals',
-              style: TextStyle(color: Palette.text, fontSize: 18, fontWeight: FontWeight.w700),
+              style: TextStyle(
+                  color: Palette.text,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 16),
             Row(
@@ -605,7 +691,8 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
                     controller: _hrCtrl,
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: Palette.text),
-                    decoration: const InputDecoration(labelText: 'Heart Rate (BPM)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Heart Rate (BPM)'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -622,7 +709,8 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
             const SizedBox(height: 12),
             TextField(
               controller: _tempCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
               style: const TextStyle(color: Palette.text),
               decoration: const InputDecoration(labelText: 'Temperature (°C)'),
             ),
@@ -634,7 +722,8 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
                     controller: _sysCtrl,
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: Palette.text),
-                    decoration: const InputDecoration(labelText: 'Systolic BP (opt)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Systolic BP (opt)'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -643,7 +732,8 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
                     controller: _diaCtrl,
                     keyboardType: TextInputType.number,
                     style: const TextStyle(color: Palette.text),
-                    decoration: const InputDecoration(labelText: 'Diastolic BP (opt)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Diastolic BP (opt)'),
                   ),
                 ),
               ],
@@ -655,7 +745,8 @@ class _RecordVitalsSheetState extends ConsumerState<_RecordVitalsSheet> {
                   ? const SizedBox(
                       width: 20,
                       height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF042F2A)),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Color(0xFF042F2A)),
                     )
                   : const Text('Save & Run Clinical Triage'),
             ),

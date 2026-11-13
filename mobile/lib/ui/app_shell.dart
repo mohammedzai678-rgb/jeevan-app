@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
+import '../data/medication_reminder_service.dart';
 import '../state/providers.dart';
 import 'screens/care_map_screen.dart';
 import 'screens/dashboard_screen.dart';
@@ -58,7 +59,7 @@ const kJeevanRoutes = <JeevanRouteItem>[
     id: 'vitawatch',
     emoji: '📡',
     label: 'VitaWatch',
-    subtitle: 'Live HR, SpO₂, BP, ECG & AI PPG scanner',
+    subtitle: 'Live watch readings, Bluetooth controls & history',
     icon: Icons.watch_rounded,
     color: Palette.teal,
   ),
@@ -207,8 +208,29 @@ class _AppShellState extends ConsumerState<AppShell>
       ref.read(liveProvider).start();
       unawaited(
           ref.read(devicesProvider.notifier).refresh().catchError((_) {}));
-      unawaited(ref.read(bleProvider).autoConnect());
+      unawaited(_autoConnectWatch());
+      unawaited(_syncMedicationAlerts());
     });
+  }
+
+  Future<void> _syncMedicationAlerts() async {
+    try {
+      final medications = await ref.read(apiProvider).listMedications();
+      await MedicationReminderService.sync(medications);
+      await MedicationReminderService.syncWatchSchedule(
+          medications, ref.read(bleProvider));
+    } catch (_) {
+      // Keep the app usable if notifications or the medication service are unavailable.
+    }
+  }
+
+  Future<void> _autoConnectWatch() async {
+    final ble = ref.read(bleProvider);
+    await ble.autoConnect();
+    try {
+      final medications = await ref.read(apiProvider).listMedications();
+      await MedicationReminderService.syncWatchSchedule(medications, ble);
+    } catch (_) {}
   }
 
   @override
@@ -217,7 +239,7 @@ class _AppShellState extends ConsumerState<AppShell>
       ref.read(liveProvider).start();
       unawaited(
           ref.read(devicesProvider.notifier).refresh().catchError((_) {}));
-      unawaited(ref.read(bleProvider).autoConnect());
+      unawaited(_autoConnectWatch());
     }
   }
 

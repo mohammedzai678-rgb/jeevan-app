@@ -11,8 +11,7 @@
 // =============================================================================
 // JEEVANCARE VITAWATCH — LOW-LATENCY BLE GATT SERVER
 // =============================================================================
-// Streams real-time vitals at 10 Hz (~40 ms latency) directly to the Jeevan
-// Flutter mobile app over Bluetooth Low Energy alongside Wi-Fi cloud sync.
+// Streams real-time vitals and accepts watch controls over Bluetooth Low Energy.
 // =============================================================================
 
 #define JEEVAN_BLE_SERVICE_UUID        "4a455645-0001-4c2b-9d3a-5a65657600a1"
@@ -24,7 +23,6 @@
 #define BLE_CMD_IDLE          0
 #define BLE_CMD_READ_MAX30102 1
 #define BLE_CMD_READ_DHT11    2
-#define BLE_CMD_READ_AD8232   3
 
 static BLEServer*         pJeevanBleServer  = nullptr;
 static BLECharacteristic* pVitalsChar       = nullptr;
@@ -34,7 +32,13 @@ static BLECharacteristic* pEventChar        = nullptr;
 static portMUX_TYPE   bleStateMux   = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool  bleConnected  = false;
 static volatile bool  bleCmdPinned  = false;
+static volatile bool  bleLedTestRequested = false;
 static volatile uint8_t blePinnedCmd = BLE_CMD_IDLE;
+static volatile int8_t bleReminderCommand = -1;
+static volatile bool bleTimeSetRequested = false;
+static volatile uint32_t bleUnixTime = 0;
+static volatile bool bleReminderScheduleRequested = false;
+static char bleReminderSchedule[96] = "";
 
 class JeevanBleServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) override {
@@ -67,6 +71,41 @@ class JeevanBleCommandCallbacks : public BLECharacteristicCallbacks {
 
     Serial.printf("[BLE] Command received: %s\n", val.c_str());
 
+    if (val == "test_led") {
+      portENTER_CRITICAL(&bleStateMux);
+      bleLedTestRequested = true;
+      portEXIT_CRITICAL(&bleStateMux);
+      return;
+    }
+
+    if (val == "reminder_on" || val == "reminder_off") {
+      portENTER_CRITICAL(&bleStateMux);
+      bleReminderCommand = val == "reminder_on" ? 1 : 0;
+      portEXIT_CRITICAL(&bleStateMux);
+      return;
+    }
+
+    if (val.startsWith("set_time:")) {
+      const uint32_t epoch = (uint32_t)val.substring(9).toInt();
+      if (epoch > 1700000000UL) {
+        portENTER_CRITICAL(&bleStateMux);
+        bleUnixTime = epoch;
+        bleTimeSetRequested = true;
+        portEXIT_CRITICAL(&bleStateMux);
+      }
+      return;
+    }
+
+    if (val.startsWith("set_schedule:")) {
+      String schedule = val.substring(13);
+      portENTER_CRITICAL(&bleStateMux);
+      strncpy(bleReminderSchedule, schedule.c_str(), sizeof(bleReminderSchedule) - 1);
+      bleReminderSchedule[sizeof(bleReminderSchedule) - 1] = '\0';
+      bleReminderScheduleRequested = true;
+      portEXIT_CRITICAL(&bleStateMux);
+      return;
+    }
+
     if (val == "auto") {
       portENTER_CRITICAL(&bleStateMux);
       bleCmdPinned = false;
@@ -81,8 +120,6 @@ class JeevanBleCommandCallbacks : public BLECharacteristicCallbacks {
       parsedCmd = BLE_CMD_READ_MAX30102;
     } else if (val == "read_dht11" || val == "read_max30205") {
       parsedCmd = BLE_CMD_READ_DHT11;
-    } else if (val == "read_ad8232") {
-      parsedCmd = BLE_CMD_READ_AD8232;
     }
 
     if (parsedCmd != 255) {
@@ -95,12 +132,12 @@ class JeevanBleCommandCallbacks : public BLECharacteristicCallbacks {
 };
 
 inline void bleBegin(const char* deviceNameSuffix = "VitaWatch") {
-  // Release classic BT memory — saves ~30 KB heap for HTTPS
-  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+  // Release classic BT memory; the watch uses BLE only.
+  esp_bt_mem_release(ESP_BT_MODE_CLASSIC_BT);
 
   String devName = String("Jeevan-") + (deviceNameSuffix ? deviceNameSuffix : "VitaWatch");
   BLEDevice::init(devName.c_str());
-  BLEDevice::setMTU(185);
+  BLEDevice::setMTU(100);
 
   pJeevanBleServer = BLEDevice::createServer();
   pJeevanBleServer->setCallbacks(new JeevanBleServerCallbacks());
@@ -164,6 +201,47 @@ inline bool bleGetPinnedCommand(uint8_t* outCmd) {
   return pinned;
 }
 
+inline bool bleTakeLedTestRequest() {
+  bool requested;
+  portENTER_CRITICAL(&bleStateMux);
+  requested = bleLedTestRequested;
+  bleLedTestRequested = false;
+  portEXIT_CRITICAL(&bleStateMux);
+  return requested;
+}
+
+inline int8_t bleTakeReminderCommand() {
+  int8_t command;
+  portENTER_CRITICAL(&bleStateMux);
+  command = bleReminderCommand;
+  bleReminderCommand = -1;
+  portEXIT_CRITICAL(&bleStateMux);
+  return command;
+}
+
+inline bool bleTakeTimeSetRequest(uint32_t* epoch) {
+  bool requested;
+  portENTER_CRITICAL(&bleStateMux);
+  requested = bleTimeSetRequested;
+  if (requested && epoch) *epoch = bleUnixTime;
+  bleTimeSetRequested = false;
+  portEXIT_CRITICAL(&bleStateMux);
+  return requested;
+}
+
+inline bool bleTakeReminderSchedule(char* out, size_t outSize) {
+  bool requested;
+  portENTER_CRITICAL(&bleStateMux);
+  requested = bleReminderScheduleRequested;
+  if (requested && out && outSize > 0) {
+    strncpy(out, bleReminderSchedule, outSize - 1);
+    out[outSize - 1] = '\0';
+  }
+  bleReminderScheduleRequested = false;
+  portEXIT_CRITICAL(&bleStateMux);
+  return requested;
+}
+
 inline void bleNotifyVitals(
   int hr,
   bool hrValid,
@@ -171,32 +249,24 @@ inline void bleNotifyVitals(
   bool spo2Valid,
   bool finger,
   float temp,
-  bool tempValid,
-  int ecgBpm,
-  bool leadsOff,
-  int rawEcg
+  bool tempValid
 ) {
   if (!bleIsConnected() || pVitalsChar == nullptr) return;
 
-  char payload[96];
+  char payload[64];
   int outHr   = (finger && hrValid) ? hr : 0;
   int outSpo2 = (finger && spo2Valid) ? spo2 : 0;
   float outT  = tempValid ? temp : 0.0f;
-  int outEcg  = (!leadsOff && ecgBpm > 0) ? ecgBpm : 0;
-  int outLo   = leadsOff ? 1 : 0;
   int outF    = finger ? 1 : 0;
 
   snprintf(
     payload,
     sizeof(payload),
-    "{\"hr\":%d,\"spo2\":%d,\"t\":%.1f,\"ecg\":%d,\"lo\":%d,\"f\":%d,\"v\":%d}\n",
+    "{\"hr\":%d,\"spo2\":%d,\"t\":%.1f,\"f\":%d}\n",
     outHr,
     outSpo2,
     outT,
-    outEcg,
-    outLo,
-    outF,
-    rawEcg
+    outF
   );
 
   pVitalsChar->setValue((uint8_t*)payload, strlen(payload));

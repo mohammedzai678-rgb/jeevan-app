@@ -102,6 +102,7 @@ class ApiClient {
   Future<SosResult> sos(double? lat, double? lng,
       {String notes = '',
       String? deviceId,
+      Map<String, dynamic>? vitals,
       String? userName,
       String? bloodGroup,
       List<String> allergies = const [],
@@ -113,6 +114,7 @@ class ApiClient {
       if (lat != null && lng != null) 'lng': lng,
       'notes': notes,
       'device_id': deviceId,
+      if (vitals != null) 'vitals': vitals,
       'user_name': userName,
       'blood_group': bloodGroup,
       'allergies': allergies,
@@ -205,15 +207,15 @@ class ApiClient {
       _send('GET', '/api/stick/geofence');
   Future<Map<String, dynamic>> updateStickGeofence({
     required bool enabled,
-    required double centerLat,
-    required double centerLng,
+    required double? centerLat,
+    required double? centerLng,
     required double radiusM,
     String label = 'Home Safety Zone',
   }) =>
       _send('POST', '/api/stick/geofence', body: {
         'enabled': enabled,
-        'center_lat': centerLat,
-        'center_lng': centerLng,
+        if (centerLat != null) 'center_lat': centerLat,
+        if (centerLng != null) 'center_lng': centerLng,
         'radius_m': radiusM,
         'label': label,
       });
@@ -618,6 +620,19 @@ class ApiClient {
       _send('POST', '/api/device/record-reading', body: {
         'device_id': deviceId,
         'deviceId': deviceId,
+      });
+
+  Future<Map<String, dynamic>> saveBleReading({
+    required String deviceId,
+    int? heartRate,
+    int? spo2,
+    double? temperature,
+  }) =>
+      _send('POST', '/api/vitals/ble/record', body: {
+        'device_id': deviceId,
+        if (heartRate != null) 'heart_rate': heartRate,
+        if (spo2 != null) 'spo2': spo2,
+        if (temperature != null) 'temperature': temperature,
       });
 
   // ── Health Vault (routed through FastAPI — works with local auth) ──

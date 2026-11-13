@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme.dart';
+import '../../data/ble_service.dart';
 import '../../data/medication_reminder_service.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
@@ -41,6 +42,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
       });
       try {
         await MedicationReminderService.sync(list);
+        await MedicationReminderService.syncWatchSchedule(
+            list, ref.read(bleProvider));
       } catch (_) {
         // Keep the medication list usable when notifications are unavailable.
       }
@@ -51,7 +54,7 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
     }
   }
 
-  Future<void> _ringWatchLed(Map<String, dynamic> med, String deviceId) async {
+  Future<void> _ringWatchLed(Map<String, dynamic> med) async {
     final id = '${med['id'] ?? med['name']}';
     final name = (med['name'] as String?)?.trim().isNotEmpty == true
         ? med['name'] as String
@@ -65,12 +68,16 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
     await SystemSound.play(SystemSoundType.alert);
     await HapticFeedback.mediumImpact();
     try {
-      await ref.read(apiProvider).triggerReminder(deviceId, name, slot);
-      await ref.read(devicesProvider.notifier).refresh();
+      final ble = ref.read(bleProvider);
+      if (ble.current != BleState.connected) {
+        throw StateError('Connect the watch over Bluetooth first.');
+      }
+      await ble.sendCommand('reminder_on');
+      await MedicationReminderService.showMedicationAlert(name);
       if (mounted) {
         showSnack(
           context,
-          'VitaWatch ($deviceId) reminder LED & buzzer triggered for $name ($slot)!',
+          'Phone sound alert and VitaWatch LED reminder started for $name ($slot).',
         );
       }
     } catch (e) {
@@ -95,6 +102,10 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
       });
       try {
         await MedicationReminderService.sync(_medications);
+        await MedicationReminderService.syncWatchSchedule(
+          _medications,
+          ref.read(bleProvider),
+        );
       } catch (_) {}
       showSnack(context, 'Removed ${med['name'] ?? 'medication'}.');
     } catch (e) {
@@ -378,11 +389,7 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final devicesState = ref.watch(devicesProvider);
-    final activeDeviceId =
-        (devicesState.selected != null && devicesState.selected!.isNotEmpty)
-            ? devicesState.selected!
-            : 'esp32_jeevancare_01';
+    final bleState = ref.watch(bleStateProvider).valueOrNull ?? BleState.idle;
 
     final canPop = Navigator.of(context).canPop();
 
@@ -578,7 +585,9 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'VitaWatch Reminder Target: $activeDeviceId',
+                          bleState == BleState.connected
+                              ? 'VitaWatch reminder via Bluetooth'
+                              : 'Connect VitaWatch to activate its indicator',
                           style: const TextStyle(
                             color: Palette.text,
                             fontSize: 14,
@@ -825,9 +834,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                                         Palette.amber.withValues(alpha: 0.45)),
                               ),
                             ),
-                            onPressed: isRinging
-                                ? null
-                                : () => _ringWatchLed(med, activeDeviceId),
+                            onPressed:
+                                isRinging ? null : () => _ringWatchLed(med),
                             icon: isRinging
                                 ? const SizedBox(
                                     width: 18,

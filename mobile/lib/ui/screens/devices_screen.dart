@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../../core/theme.dart';
 import '../../data/ble_service.dart';
+import '../../data/medication_reminder_service.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
 import 'walking_stick_screen.dart';
@@ -19,6 +20,7 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
   final _pairController = TextEditingController(text: 'esp32_jeevancare_01');
   bool _pairing = false;
   String? _connectingBleId;
+  String _bleSensorMode = 'read_max30102';
 
   static final _idRegex = RegExp(r'^[A-Za-z0-9_-]{3,64}$');
 
@@ -44,12 +46,46 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
   Future<void> _connectBle(String remoteId) async {
     setState(() => _connectingBleId = remoteId);
     try {
-      await ref.read(bleProvider).connect(remoteId);
+      final ble = ref.read(bleProvider);
+      await ble.connect(remoteId);
+      try {
+        await ble.sendCommand(_bleSensorMode);
+      } catch (e) {
+        if (mounted)
+          showSnack(context, 'Connected, but sensor mode was not sent: $e',
+              error: true);
+      }
+      try {
+        final medications = await ref.read(apiProvider).listMedications();
+        await MedicationReminderService.syncWatchSchedule(medications, ble);
+      } catch (_) {}
       if (mounted) showSnack(context, 'Connected to VitaWatch over BLE.');
     } catch (e) {
       if (mounted) showSnack(context, 'BLE connect failed: $e', error: true);
     } finally {
       if (mounted) setState(() => _connectingBleId = null);
+    }
+  }
+
+  Future<void> _setBleSensorMode(String? mode) async {
+    if (mode == null || ref.read(bleProvider).current != BleState.connected)
+      return;
+    setState(() => _bleSensorMode = mode);
+    try {
+      await ref.read(bleProvider).sendCommand(mode);
+      if (mounted) showSnack(context, 'Watch sensor mode updated.');
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not select sensor: $e', error: true);
+    }
+  }
+
+  Future<void> _testBleLed() async {
+    try {
+      await ref.read(bleProvider).sendCommand('test_led');
+      if (mounted) showSnack(context, 'LED test pulse sent to GPIO 22.');
+    } catch (e) {
+      if (mounted) showSnack(context, 'LED test failed: $e', error: true);
     }
   }
 
@@ -95,7 +131,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
   @override
   Widget build(BuildContext context) {
     final bleState = ref.watch(bleStateProvider).valueOrNull ?? BleState.idle;
-    final foundBle = ref.watch(bleScanProvider).valueOrNull ?? const <BleDevice>[];
+    final foundBle =
+        ref.watch(bleScanProvider).valueOrNull ?? const <BleDevice>[];
     final bleService = ref.watch(bleProvider);
     final devicesState = ref.watch(devicesProvider);
     final cloudDevices = devicesState.devices.values.toList();
@@ -128,11 +165,13 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                         height: 14,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
-                          valueColor: AlwaysStoppedAnimation<Color>(Palette.teal),
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Palette.teal),
                         ),
                       )
                     : const Icon(Icons.bluetooth_searching_rounded, size: 18),
-                label: Text(bleState == BleState.scanning ? 'Scanning…' : 'Scan Watch'),
+                label: Text(
+                    bleState == BleState.scanning ? 'Scanning…' : 'Scan Watch'),
               ),
             ),
             GlassCard(
@@ -178,8 +217,9 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                             ),
                             const SizedBox(height: 2),
                             const Text(
-                              'Streams vitals directly from ESP32 without Wi-Fi and forwards to cloud.',
-                              style: TextStyle(color: Palette.textDim, fontSize: 12),
+                              'Bluetooth readings work directly; internet is needed to save readings to your account.',
+                              style: TextStyle(
+                                  color: Palette.textDim, fontSize: 12),
                             ),
                           ],
                         ),
@@ -188,7 +228,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                         OutlinedButton(
                           style: OutlinedButton.styleFrom(
                             foregroundColor: Palette.red,
-                            side: BorderSide(color: Palette.red.withValues(alpha: 0.5)),
+                            side: BorderSide(
+                                color: Palette.red.withValues(alpha: 0.5)),
                           ),
                           onPressed: _disconnectBle,
                           child: const Text('Disconnect'),
@@ -232,17 +273,54 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                             FilledButton.tonal(
                               style: FilledButton.styleFrom(
                                 minimumSize: const Size(0, 36),
-                                backgroundColor: Palette.teal.withValues(alpha: 0.18),
+                                backgroundColor:
+                                    Palette.teal.withValues(alpha: 0.18),
                                 foregroundColor: Palette.teal,
                               ),
-                              onPressed: _connectingBleId == dev.id
+                              onPressed: bleService.connectedId == dev.id ||
+                                      _connectingBleId == dev.id
                                   ? null
                                   : () => _connectBle(dev.id),
-                              child: Text(_connectingBleId == dev.id ? 'Linking…' : 'Connect'),
+                              child: Text(
+                                bleService.connectedId == dev.id
+                                    ? 'Connected'
+                                    : _connectingBleId == dev.id
+                                        ? 'Linking…'
+                                        : 'Connect',
+                              ),
                             ),
                           ],
                         ),
                       ),
+                  ],
+                  if (bleState == BleState.connected) ...[
+                    const SizedBox(height: 14),
+                    DropdownButtonFormField<String>(
+                      value: _bleSensorMode,
+                      dropdownColor: Palette.surfaceHi,
+                      decoration: const InputDecoration(
+                        labelText: 'Sensor to read',
+                        prefixIcon:
+                            Icon(Icons.sensors_rounded, color: Palette.teal),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'read_max30102',
+                          child: Text('Heart rate and SpO₂'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'read_dht11',
+                          child: Text('Body temperature'),
+                        ),
+                      ],
+                      onChanged: _setBleSensorMode,
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _testBleLed,
+                      icon: const Icon(Icons.lightbulb_outline_rounded),
+                      label: const Text('Test indicator LED'),
+                    ),
                   ],
                 ],
               ),
@@ -250,13 +328,13 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
 
             const SizedBox(height: 22),
 
-            // Section 2: Paired Cloud / Wi-Fi Devices
-            const SectionHeader('Paired Cloud / Wi-Fi Devices'),
+            // Section 2: Other account-linked devices
+            const SectionHeader('Other Account-Linked Devices'),
             if (cloudDevices.isEmpty)
               const EmptyState(
                 Icons.router_rounded,
-                'No Cloud Devices Linked',
-                'Enter your ESP32 device ID below to link your VitaWatch or Smart Walking Stick.',
+                'No Other Devices Linked',
+                'VitaWatch connects directly over Bluetooth. Link other gateway devices here if you use them.',
               )
             else
               for (final d in cloudDevices)
@@ -267,7 +345,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                     borderColor: devicesState.selected == d.deviceId
                         ? Palette.teal
                         : Palette.outline,
-                    onTap: () => ref.read(devicesProvider.notifier).select(d.deviceId),
+                    onTap: () =>
+                        ref.read(devicesProvider.notifier).select(d.deviceId),
                     child: Row(
                       children: [
                         Container(
@@ -298,10 +377,13 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                                   if (devicesState.selected == d.deviceId) ...[
                                     const SizedBox(width: 8),
                                     Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 2),
                                       decoration: BoxDecoration(
-                                        color: Palette.teal.withValues(alpha: 0.18),
-                                        borderRadius: BorderRadius.circular(999),
+                                        color: Palette.teal
+                                            .withValues(alpha: 0.18),
+                                        borderRadius:
+                                            BorderRadius.circular(999),
                                       ),
                                       child: const Text(
                                         'ACTIVE',
@@ -319,7 +401,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                               Text(
                                 '${d.online ? 'Online' : 'Offline'} • Sensor: ${sensorLabel(d.sensor)}'
                                 '${d.rssi != null ? ' • ${d.rssi} dBm' : ''}',
-                                style: const TextStyle(color: Palette.textDim, fontSize: 12),
+                                style: const TextStyle(
+                                    color: Palette.textDim, fontSize: 12),
                               ),
                             ],
                           ),
@@ -327,7 +410,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                         IconButton(
                           tooltip: 'Unpair device',
                           onPressed: () => _unpairDevice(d.deviceId),
-                          icon: const Icon(Icons.link_off_rounded, color: Palette.textDim),
+                          icon: const Icon(Icons.link_off_rounded,
+                              color: Palette.textDim),
                         ),
                       ],
                     ),
@@ -363,7 +447,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                     decoration: const InputDecoration(
                       labelText: 'Hardware Device ID',
                       hintText: 'esp32_jeevancare_01',
-                      prefixIcon: Icon(Icons.watch_outlined, color: Palette.teal),
+                      prefixIcon:
+                          Icon(Icons.watch_outlined, color: Palette.teal),
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -381,7 +466,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
             GlassCard(
               padding: const EdgeInsets.all(16),
               onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const WalkingStickScreen()),
+                MaterialPageRoute<void>(
+                    builder: (_) => const WalkingStickScreen()),
               ),
               child: Row(
                 children: [
@@ -392,7 +478,8 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                       color: Palette.blue.withValues(alpha: 0.16),
                       borderRadius: BorderRadius.circular(13),
                     ),
-                    child: const Icon(Icons.radar_rounded, color: Palette.blue, size: 24),
+                    child: const Icon(Icons.radar_rounded,
+                        color: Palette.blue, size: 24),
                   ),
                   const SizedBox(width: 14),
                   const Expanded(
@@ -401,17 +488,22 @@ class _DevicesScreenState extends ConsumerState<DevicesScreen> {
                       children: [
                         Text(
                           'Smart Walking Stick Console',
-                          style: TextStyle(color: Palette.text, fontSize: 15, fontWeight: FontWeight.w700),
+                          style: TextStyle(
+                              color: Palette.text,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700),
                         ),
                         SizedBox(height: 2),
                         Text(
                           'Live 3-zone ultrasonic obstacle radar, LDR auto-headlight & safe-zone geofence perimeter',
-                          style: TextStyle(color: Palette.textDim, fontSize: 12),
+                          style:
+                              TextStyle(color: Palette.textDim, fontSize: 12),
                         ),
                       ],
                     ),
                   ),
-                  const Icon(Icons.chevron_right_rounded, color: Palette.textDim),
+                  const Icon(Icons.chevron_right_rounded,
+                      color: Palette.textDim),
                 ],
               ),
             ),

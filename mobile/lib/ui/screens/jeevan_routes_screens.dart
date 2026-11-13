@@ -9,21 +9,22 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/config.dart';
 import '../../core/theme.dart';
+import '../../data/ble_service.dart';
+import '../../data/medication_reminder_service.dart';
 import '../../data/models.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
-import '../widgets/ecg_strip.dart';
 import '../widgets/emergency_qr_card.dart';
 import '../widgets/markdown_lite.dart';
 import '../widgets/map_gesture_layer.dart';
 import '../widgets/map_tile_image.dart';
 import '../widgets/pulse_heart.dart';
 import '../widgets/vital_tile.dart';
-import 'devices_screen.dart';
 import 'history_screen.dart';
 import 'video_call_screen.dart';
 
@@ -31,7 +32,7 @@ import 'video_call_screen.dart';
 // ROUTE 2: VITAWATCH (/vitawatch)  Matches VitaWatchPage.tsx
 // Sub-routes:
 //   - Mode Switcher:  ESP32 DevKit Live |  Manual Entry (No Hardware)
-//   - 7 Hardware Status Cards + Pin 22 LED Control
+//   - Direct BLE controls, live watch readings, and save-to-history action
 //   - 3 Sub-Tabs: Live Telemetry / Manual Scan | Reading History | Analysis Docs
 //
 class VitaWatchRouteScreen extends ConsumerStatefulWidget {
@@ -47,8 +48,10 @@ class VitaWatchRouteScreen extends ConsumerStatefulWidget {
 class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
   bool _manualMode = false;
   late int _subTab;
-  bool _pin22LedOn = false;
-  bool _ledBusy = false;
+  bool _medicineReminderOn = false;
+  bool _deviceBusy = false;
+  bool _savingReading = false;
+  String _bleSensorMode = 'read_max30102';
   bool _aiScanBusy = false;
   Map<String, dynamic>? _aiScanResult;
 
@@ -58,47 +61,6 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
   final _sysCtrl = TextEditingController(text: '120');
   final _diaCtrl = TextEditingController(text: '78');
   final _glucoseCtrl = TextEditingController(text: '96');
-
-  static const _hardwareCards =
-      <({String icon, String name, String role, String pin})>[
-    (
-      icon: '🎛',
-      name: 'ESP32 DEVKIT',
-      role: 'Dual-Core MCU',
-      pin: '240 MHz • BLE/Wi-Fi'
-    ),
-    (icon: '❤️', name: 'MAX30102', role: 'Pulse & SpO₂', pin: 'I2C GPIO 21/22'),
-    (
-      icon: '🌡',
-      name: 'MAX30205 / DHT11',
-      role: 'Body Temp',
-      pin: 'GPIO 4 / I2C'
-    ),
-    (
-      icon: '📈',
-      name: 'AD8232 ECG',
-      role: 'Single-Lead ECG',
-      pin: 'ADC GPIO 34'
-    ),
-    (
-      icon: '🖥',
-      name: 'OLED 128 × 64',
-      role: 'SSD1306 Display',
-      pin: 'I2C 0x3C'
-    ),
-    (
-      icon: '📶',
-      name: 'ESP32 Wi-Fi',
-      role: 'Cloud Telemetry',
-      pin: 'HTTP/WS 2.4GHz'
-    ),
-    (
-      icon: '🦯',
-      name: 'WALKING STICK',
-      role: 'Paired Stick #2',
-      pin: 'ESP-NOW / Cloud'
-    ),
-  ];
 
   @override
   void initState() {
@@ -117,36 +79,111 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
     super.dispose();
   }
 
-  Future<void> _togglePin22Led() async {
-    if (_ledBusy) return;
-    setState(() => _ledBusy = true);
-    final deviceId =
-        ref.read(devicesProvider).selected ?? 'esp32_jeevancare_01';
+  Future<void> _startBleScan() async {
     try {
-      if (!_pin22LedOn) {
-        await ref
-            .read(apiProvider)
-            .triggerReminder(deviceId, 'VitaWatch Pin 22 Test', 'Now');
-      } else {
-        await ref.read(apiProvider).ackReminder(deviceId);
+      await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.locationWhenInUse,
+      ].request();
+      await ref.read(bleProvider).scan();
+    } catch (e) {
+      if (mounted) showSnack(context, 'Watch scan failed: $e', error: true);
+    }
+  }
+
+  Future<void> _connectBle(String remoteId) async {
+    setState(() => _deviceBusy = true);
+    try {
+      final ble = ref.read(bleProvider);
+      await ble.connect(remoteId);
+      await ble.sendCommand(_bleSensorMode);
+      try {
+        final medications = await ref.read(apiProvider).listMedications();
+        await MedicationReminderService.syncWatchSchedule(medications, ble);
+      } catch (_) {}
+      if (mounted) showSnack(context, 'VitaWatch connected over Bluetooth.');
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Watch connection failed: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _deviceBusy = false);
+    }
+  }
+
+  Future<void> _disconnectBle() async {
+    try {
+      await ref.read(bleProvider).disconnect();
+      if (mounted) showSnack(context, 'VitaWatch disconnected.');
+    } catch (e) {
+      if (mounted) showSnack(context, 'Disconnect failed: $e', error: true);
+    }
+  }
+
+  Future<void> _setBleSensorMode(String? mode) async {
+    if (mode == null || ref.read(bleProvider).current != BleState.connected)
+      return;
+    try {
+      await ref.read(bleProvider).sendCommand(mode);
+      if (mounted) setState(() => _bleSensorMode = mode);
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not select sensor: $e', error: true);
+    }
+  }
+
+  Future<void> _testBleLed() async {
+    try {
+      await ref.read(bleProvider).sendCommand('test_led');
+      if (mounted) showSnack(context, 'Indicator LED test sent to the watch.');
+    } catch (e) {
+      if (mounted) showSnack(context, 'LED test failed: $e', error: true);
+    }
+  }
+
+  Future<void> _toggleWatchReminder() async {
+    final next = !_medicineReminderOn;
+    try {
+      await ref
+          .read(bleProvider)
+          .sendCommand(next ? 'reminder_on' : 'reminder_off');
+      if (next) {
+        await MedicationReminderService.showMedicationAlert(
+            'your scheduled dose');
       }
-      setState(() => _pin22LedOn = !_pin22LedOn);
+      if (mounted) setState(() => _medicineReminderOn = next);
       if (mounted) {
         showSnack(
-          context,
-          _pin22LedOn
-              ? 'GPIO Pin 22 Reminder LED & Buzzer turned ON ($deviceId)'
-              : 'GPIO Pin 22 Reminder LED turned OFF ($deviceId)',
-        );
+            context,
+            next
+                ? 'Medicine reminder is active on the watch.'
+                : 'Watch reminder cleared.');
       }
     } catch (e) {
-      setState(() => _pin22LedOn = !_pin22LedOn);
-      if (mounted) {
-        showSnack(context,
-            'Pin 22 LED state toggled (${_pin22LedOn ? "ON" : "OFF"}).');
-      }
+      if (mounted)
+        showSnack(context, 'Reminder control failed: $e', error: true);
+    }
+  }
+
+  Future<void> _saveWatchReading(DeviceSnapshot? watch) async {
+    final vitals = watch?.vitals;
+    if (watch == null || vitals == null || vitals.isEmpty || _savingReading)
+      return;
+    setState(() => _savingReading = true);
+    try {
+      await ref.read(apiProvider).saveBleReading(
+            deviceId: watch.deviceId,
+            heartRate: vitals.heartRate,
+            spo2: vitals.spo2,
+            temperature: vitals.temperature,
+          );
+      ref.invalidate(historyProvider);
+      if (mounted) showSnack(context, 'Watch readings saved to your history.');
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not save readings: $e', error: true);
     } finally {
-      if (mounted) setState(() => _ledBusy = false);
+      if (mounted) setState(() => _savingReading = false);
     }
   }
 
@@ -176,7 +213,23 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
   @override
   Widget build(BuildContext context) {
     final devicesState = ref.watch(devicesProvider);
-    final current = devicesState.current;
+    final bleState = ref.watch(bleStateProvider).valueOrNull ?? BleState.idle;
+    final bleService = ref.watch(bleProvider);
+    final foundBle =
+        ref.watch(bleScanProvider).valueOrNull ?? const <BleDevice>[];
+    final currentBleId = (bleService.connectedId ?? '')
+        .replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final watch = bleState == BleState.connected &&
+            devicesState.bleWatch?.deviceId == currentBleId
+        ? devicesState.bleWatch
+        : null;
+    final watchVitals = watch?.vitals;
+    String statusFor(String metric) {
+      for (final finding in watch?.analysis.findings ?? const <Finding>[]) {
+        if (finding.metric == metric) return finding.status;
+      }
+      return 'normal';
+    }
 
     return Scaffold(
       backgroundColor: Palette.bg,
@@ -210,20 +263,30 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
                       ),
                     ),
                     Text(
-                      'ESP32 DevKit Live Vitals • MAX30102 • AD8232 ECG • AI Scan',
+                      'Live readings from the watch over Bluetooth',
                       style: TextStyle(color: Palette.textDim, fontSize: 12.5),
                     ),
                   ],
                 ),
               ),
               OutlinedButton.icon(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                      builder: (_) => const DevicesScreen()),
+                onPressed: bleState == BleState.connected
+                    ? _disconnectBle
+                    : (bleState == BleState.scanning || _deviceBusy
+                        ? null
+                        : _startBleScan),
+                icon: Icon(
+                  bleState == BleState.connected
+                      ? Icons.bluetooth_connected_rounded
+                      : Icons.bluetooth_searching_rounded,
+                  size: 16,
+                  color: Palette.teal,
                 ),
-                icon: const Icon(Icons.bluetooth_rounded,
-                    size: 16, color: Palette.teal),
-                label: const Text('Pair BLE'),
+                label: Text(bleState == BleState.connected
+                    ? 'Disconnect'
+                    : bleState == BleState.scanning
+                        ? 'Scanning…'
+                        : 'Scan watch'),
               ),
             ],
           ),
@@ -258,129 +321,114 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
           ),
           const SizedBox(height: 14),
 
-          // 7 Hardware Status Cards  Clean Vertical 2-Column Grid (No Horizontal Scroll)
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 8,
-            crossAxisSpacing: 8,
-            childAspectRatio: 2.35,
-            children: [
-              for (final hw in _hardwareCards)
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Palette.outline),
-                  ),
-                  child: Row(
-                    children: [
-                      Text(hw.icon, style: const TextStyle(fontSize: 18)),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    hw.name,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Palette.text,
-                                      fontSize: 11.5,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                ),
-                                Container(
-                                  width: 7,
-                                  height: 7,
-                                  decoration: const BoxDecoration(
-                                    color: Palette.green,
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            Text(
-                              '${hw.role}  ${hw.pin}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: Palette.textDim, fontSize: 10.5),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 14),
-
-          // Hardware Medicine Reminder & GPIO Pin 22 LED Bar
           GlassCard(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            borderColor: _pin22LedOn ? Palette.amber : Palette.outline,
-            child: Row(
+            padding: const EdgeInsets.all(16),
+            borderColor: bleState == BleState.connected
+                ? Palette.teal.withValues(alpha: 0.55)
+                : Palette.outline,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: (_pin22LedOn ? Palette.amber : Palette.teal)
-                        .withOpacity(0.14),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  alignment: Alignment.center,
-                  child: Icon(
-                    Icons.lightbulb_rounded,
-                    color: _pin22LedOn ? Palette.amber : Palette.teal,
-                    size: 20,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Hardware Medicine Reminder & GPIO 22 LED',
-                        style: TextStyle(
-                          color: Palette.text,
-                          fontSize: 13.5,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      Text(
-                        _pin22LedOn
-                            ? 'PIN 22 LED ON  Active reminder alert on watch'
-                            : 'PIN 22 LED OFF  Ready for scheduled medication slot',
+                Row(
+                  children: [
+                    Icon(
+                      bleState == BleState.connected
+                          ? Icons.bluetooth_connected_rounded
+                          : Icons.bluetooth_rounded,
+                      color: Palette.teal,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        bleState == BleState.connected
+                            ? 'Connected to ${bleService.connectedName ?? 'VitaWatch'}'
+                            : bleState == BleState.connecting
+                                ? 'Connecting to VitaWatch…'
+                                : 'Phone-to-watch Bluetooth link',
                         style: const TextStyle(
-                            color: Palette.textDim, fontSize: 11.5),
+                            color: Palette.text, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'The phone receives watch readings and sends them to your account when internet is available.',
+                  style: TextStyle(color: Palette.textDim, fontSize: 12),
+                ),
+                for (final device in foundBle)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.watch_rounded,
+                            color: Palette.teal, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${device.name}  •  ${device.rssi} dBm',
+                            style: const TextStyle(
+                                color: Palette.text, fontSize: 12),
+                          ),
+                        ),
+                        FilledButton.tonal(
+                          onPressed:
+                              bleService.connectedId == device.id || _deviceBusy
+                                  ? null
+                                  : () => _connectBle(device.id),
+                          child: Text(bleService.connectedId == device.id
+                              ? 'Connected'
+                              : _deviceBusy
+                                  ? 'Linking…'
+                                  : 'Connect'),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (bleState == BleState.connected) ...[
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    value: _bleSensorMode,
+                    dropdownColor: Palette.surfaceHi,
+                    decoration: const InputDecoration(
+                      labelText: 'Watch sensor mode',
+                      prefixIcon:
+                          Icon(Icons.sensors_rounded, color: Palette.teal),
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'read_max30102',
+                        child: Text('Heart rate and SpO₂'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'read_dht11',
+                        child: Text('Body temperature'),
+                      ),
+                    ],
+                    onChanged: _setBleSensorMode,
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _testBleLed,
+                        icon: const Icon(Icons.lightbulb_outline_rounded),
+                        label: const Text('Test indicator LED'),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: _toggleWatchReminder,
+                        icon: Icon(_medicineReminderOn
+                            ? Icons.notifications_off_rounded
+                            : Icons.medication_rounded),
+                        label: Text(_medicineReminderOn
+                            ? 'Clear reminder'
+                            : 'Reminder now'),
                       ),
                     ],
                   ),
-                ),
-                FilledButton.tonal(
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(0, 38),
-                    backgroundColor:
-                        _pin22LedOn ? Palette.amber : Palette.redLight,
-                    foregroundColor: _pin22LedOn ? Colors.white : Palette.red,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                  ),
-                  onPressed: _ledBusy ? null : _togglePin22Led,
-                  child: Text(_pin22LedOn ? 'PIN 22 LED ON' : 'PIN 22 LED OFF'),
-                ),
+                ],
               ],
             ),
           ),
@@ -424,73 +472,53 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
                 children: [
                   VitalTile(
                     label: 'Heart Rate',
-                    value: (current?.vitals.heartRate ?? 76).toString(),
+                    value: watchVitals?.heartRate?.toString(),
                     unit: 'BPM',
-                    icon: PulseHeart(
-                        bpm: current?.vitals.heartRate ?? 76, size: 20),
+                    icon: PulseHeart(bpm: watchVitals?.heartRate, size: 20),
                     color: Palette.red,
-                    status: 'normal',
-                    sparkline: devicesState.hrSeries,
-                    subtitle: 'MAX30102 optical',
+                    status: statusFor('Heart Rate'),
+                    sparkline: devicesState.bleHrSeries,
+                    subtitle: 'Waiting for watch data',
                   ),
                   VitalTile(
                     label: 'Blood Oxygen',
-                    value: (current?.vitals.spo2 ?? 98).toString(),
+                    value: watchVitals?.spo2?.toString(),
                     unit: '% SpO₂',
                     icon: const Icon(Icons.water_drop_rounded,
                         color: Palette.blue, size: 20),
                     color: Palette.blue,
-                    status: 'normal',
-                    sparkline: devicesState.spo2Series,
-                    subtitle: 'Peripheral saturation',
+                    status: statusFor('SpO2'),
+                    sparkline: devicesState.bleSpo2Series,
+                    subtitle: 'Waiting for watch data',
                   ),
                   VitalTile(
                     label: 'Body Temp',
-                    value: (current?.vitals.temperature ?? 36.7)
-                        .toStringAsFixed(1),
+                    value: watchVitals?.temperature?.toStringAsFixed(1),
                     unit: 'C',
                     icon: const Icon(Icons.thermostat_rounded,
                         color: Palette.amber, size: 20),
                     color: Palette.amber,
-                    status: 'normal',
-                    subtitle: 'Normal 36.137.2 C',
-                  ),
-                  VitalTile(
-                    label: 'ECG Rhythm',
-                    value: (current?.vitals.ecgBpm ?? 76).toString(),
-                    unit: 'BPM',
-                    icon: const Icon(Icons.monitor_heart_rounded,
-                        color: Palette.teal, size: 20),
-                    color: Palette.teal,
-                    status: 'normal',
-                    subtitle: 'Single-lead AD8232',
+                    status: statusFor('Temperature'),
+                    subtitle: 'Waiting for watch data',
                   ),
                 ],
               ),
               const SizedBox(height: 14),
-              EcgStrip(
-                samples: devicesState.ecgSeries.isNotEmpty
-                    ? devicesState.ecgSeries
-                    : const [
-                        0,
-                        2,
-                        -1,
-                        14,
-                        -8,
-                        4,
-                        1,
-                        0,
-                        0,
-                        2,
-                        -1,
-                        15,
-                        -9,
-                        4,
-                        0,
-                        1
-                      ],
-                leadsOff: current?.vitals.leadOff == true,
-                bpm: current?.vitals.ecgBpm ?? 76,
+              FilledButton.icon(
+                onPressed:
+                    watchVitals == null || watchVitals.isEmpty || _savingReading
+                        ? null
+                        : () => _saveWatchReading(watch),
+                icon: _savingReading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.bookmark_add_rounded),
+                label: Text(_savingReading
+                    ? 'Saving readings…'
+                    : 'Save these readings for analysis'),
               ),
               const SizedBox(height: 14),
             ],
@@ -629,10 +657,10 @@ class _VitaWatchRouteScreenState extends ConsumerState<VitaWatchRouteScreen> {
                   SizedBox(height: 12),
                   MarkdownLite(
                     '### 1. ESP32 DevKit V1 Sensor Pinout\n'
-                    '- **MAX30102 Pulse Oximeter**: SDA → `GPIO 21`, SCL → `GPIO 22` (I2C 400kHz)\n'
-                    '- **AD8232 Single-Lead ECG**: Output → `GPIO 34 (ADC1_CH6)`, LO+ → `GPIO 32`, LO- → `GPIO 33`\n'
-                    '- **MAX30205 / DHT11 Temp**: Digital / I2C → `GPIO 4` (±0.1°C accuracy)\n'
-                    '- **Medicine Reminder LED & Buzzer**: Active-High output → `GPIO 22`\n\n'
+                    '- **MAX30102 Pulse Oximeter**: SDA → `GPIO 19`, SCL → `GPIO 18` (I2C)\n'
+                    '- **MAX30205 Body Temperature / DHT11 fallback**: I2C / `GPIO 4`\n'
+                    '- **Medicine reminder indicator LED**: Active-High output → `GPIO 22`\n'
+                    '- **SOS button**: Active-Low input → `GPIO 27`; the phone sends the alert over BLE\n\n'
                     '### 2. Clinical Reference Thresholds\n'
                     '- **Heart Rate**: Normal `60–100 BPM` | Bradycardia `< 50 BPM` | Tachycardia `> 110 BPM`\n'
                     '- **Blood Oxygen (SpO₂)**: Normal `95–100%` | Mild Hypoxia `91–94%` | Critical `< 90%`\n'

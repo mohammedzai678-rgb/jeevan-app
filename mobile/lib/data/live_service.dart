@@ -39,6 +39,11 @@ class ReminderChanged extends LiveEvent {
   final Reminder reminder;
 }
 
+class StickChanged extends LiveEvent {
+  StickChanged(this.snapshot);
+  final Map<String, dynamic> snapshot;
+}
+
 /// Persistent WebSocket with auto-reconnect (exponential backoff + jitter) and live RTT measurement.
 /// The server pushes every sample the instant the watch posts it, so there is no polling anywhere.
 class LiveService {
@@ -80,7 +85,8 @@ class LiveService {
   void sendBle(String deviceId, Map<String, dynamic> vitals) =>
       _send({'type': 'ble_vitals', 'device_id': deviceId, 'vitals': vitals});
 
-  void sendCommand(String deviceId, String command) => _send({'type': 'command', 'device_id': deviceId, 'command': command});
+  void sendCommand(String deviceId, String command) =>
+      _send({'type': 'command', 'device_id': deviceId, 'command': command});
 
   void _send(Map<String, dynamic> m) {
     if (state == LinkState.online) _ch?.sink.add(jsonEncode(m));
@@ -105,7 +111,9 @@ class LiveService {
       try {
         final ch = IOWebSocketChannel.connect(
           _api.wsUri,
-          headers: {'Authorization': 'Bearer $token'}, // header, never the URL (URLs end up in logs)
+          headers: {
+            'Authorization': 'Bearer $token'
+          }, // header, never the URL (URLs end up in logs)
           pingInterval: const Duration(seconds: 20),
           connectTimeout: const Duration(seconds: 8),
         );
@@ -114,7 +122,10 @@ class LiveService {
         _attempt = 0;
         _set(LinkState.online);
         _pinger?.cancel();
-        _pinger = Timer.periodic(const Duration(seconds: 4), (_) => _send({'type': 'ping', 't': DateTime.now().millisecondsSinceEpoch}));
+        _pinger = Timer.periodic(
+            const Duration(seconds: 4),
+            (_) => _send(
+                {'type': 'ping', 't': DateTime.now().millisecondsSinceEpoch}));
         _send({'type': 'ping', 't': DateTime.now().millisecondsSinceEpoch});
         ch.stream.listen(
           _onMessage,
@@ -133,7 +144,9 @@ class LiveService {
       }
       if (!_running) break;
       _attempt++;
-      final backoff = Duration(milliseconds: (500 * (1 << (_attempt.clamp(0, 5)))) + (DateTime.now().millisecond % 300));
+      final backoff = Duration(
+          milliseconds: (500 * (1 << (_attempt.clamp(0, 5)))) +
+              (DateTime.now().millisecond % 300));
       await Future<void>.delayed(backoff);
     }
   }
@@ -150,21 +163,26 @@ class LiveService {
       case 'vitals':
         _devices.add(DeviceSnapshot.fromJson(data));
       case 'device_status':
-        _devices.add(DeviceSnapshot(deviceId: '${data['device_id']}', online: false));
+        _devices.add(
+            DeviceSnapshot(deviceId: '${data['device_id']}', online: false));
       case 'pong':
         final t = m['t'];
         if (t is int) _latency.add(DateTime.now().millisecondsSinceEpoch - t);
       case 'sos':
         _events.add(SosIncoming(SosEvent.fromJson(data)));
       case 'sos_delivery':
-        _events.add(SosDelivery('${data['event_id']}', (data['results'] as Map?)?.cast<String, dynamic>() ?? {}));
+        _events.add(SosDelivery('${data['event_id']}',
+            (data['results'] as Map?)?.cast<String, dynamic>() ?? {}));
       case 'sos_resolved':
         _events.add(SosResolved('${data['event_id']}'));
       case 'sos_location':
         final loc = (data['location'] as Map?)?.cast<String, dynamic>() ?? {};
-        _events.add(SosLocationUpdate('${data['event_id']}', (loc['lat'] as num).toDouble(), (loc['lng'] as num).toDouble()));
+        _events.add(SosLocationUpdate('${data['event_id']}',
+            (loc['lat'] as num).toDouble(), (loc['lng'] as num).toDouble()));
       case 'reminder':
         _events.add(ReminderChanged(Reminder.fromJson(data)));
+      case 'stick':
+        _events.add(StickChanged(data));
     }
   }
 }

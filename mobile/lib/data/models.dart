@@ -228,17 +228,17 @@ class SosEvent {
 class Reading {
   final String id;
   final DateTime at;
-  final int heartRate, spo2;
-  final double temperature;
+  final int? heartRate, spo2;
+  final double? temperature;
   final String status;
   const Reading(
       this.at, this.heartRate, this.spo2, this.temperature, this.status,
       {this.id = ''});
   factory Reading.fromJson(Map<String, dynamic> j) => Reading(
         DateTime.tryParse('${j['recorded_at']}')?.toLocal() ?? DateTime.now(),
-        _int(j['heart_rate']) ?? 0,
-        _int(j['spo2']) ?? 0,
-        _dbl(j['temperature']) ?? 0,
+        _int(j['heart_rate']),
+        _int(j['spo2']),
+        _dbl(j['temperature']),
         ((j['ai_analysis'] as Map?)?['overall_status'] as String?) ?? 'normal',
         id: '${j['id'] ?? ''}',
       );

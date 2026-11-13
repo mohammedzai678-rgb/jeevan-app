@@ -23,10 +23,10 @@ class BleSample {
 }
 
 /// Direct phone<->watch link. Typical notify latency is ~30-80 ms vs hundreds of ms through WiFi+cloud.
-/// Protocol (see firmware_ble/jeevan_ble.h):
-///   vitals notify : {"hr":78,"spo2":98,"t":36.8,"ecg":72,"lo":0,"f":1,"v":1234}
+/// Protocol (see firmware/jeevancare_ble/jeevan_ble.h):
+///   vitals notify : {"hr":78,"spo2":98,"t":36.8,"f":1}
 ///   event  notify : {"e":"sos"} | {"e":"med_ack"}
-///   command write : ASCII "auto" | "read_max30102" | "read_dht11" | "read_ad8232" | "idle"
+///   command write : sensor selection, LED test, reminder controls, and phone time sync
 class BleService {
   BleService(this._store);
   final SecureStore _store;
@@ -42,6 +42,7 @@ class BleService {
   Stream<List<BleDevice>> get found => _found.stream;
   BleState current = BleState.idle;
   String? connectedName;
+  String? connectedId;
 
   BluetoothDevice? _dev;
   BluetoothCharacteristic? _cmd;
@@ -49,6 +50,8 @@ class BleService {
   StreamSubscription<BluetoothConnectionState>? _cSub;
   StreamSubscription<List<ScanResult>>? _scanSub;
   bool _wantConnected = false;
+  bool _linkEstablished = false;
+  bool _reconnectQueued = false;
   final _buf = StringBuffer();
 
   void _set(BleState s) {
@@ -65,9 +68,15 @@ class BleService {
     await _scanSub?.cancel();
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
       for (final r in results) {
-        seen[r.device.remoteId.str] = BleDevice(r.device.remoteId.str, r.device.platformName.isEmpty ? 'Jeevan device' : r.device.platformName, r.rssi);
+        seen[r.device.remoteId.str] = BleDevice(
+            r.device.remoteId.str,
+            r.device.platformName.isEmpty
+                ? 'Jeevan device'
+                : r.device.platformName,
+            r.rssi);
       }
-      _found.add(seen.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi)));
+      _found
+          .add(seen.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi)));
     });
     await FlutterBluePlus.startScan(
       withServices: [Guid(Config.bleService)],
@@ -80,6 +89,7 @@ class BleService {
 
   Future<void> connect(String remoteId) async {
     _wantConnected = true;
+    _linkEstablished = false;
     _set(BleState.connecting);
     final dev = BluetoothDevice.fromId(remoteId);
     _dev = dev;
@@ -88,50 +98,116 @@ class BleService {
       if (s == BluetoothConnectionState.disconnected) {
         _teardownChars();
         connectedName = null;
-        if (_wantConnected) {
+        connectedId = null;
+        if (_wantConnected && _linkEstablished) {
+          _linkEstablished = false;
           _set(BleState.connecting);
-          // Auto-heal: the watch walks out of range and comes back.
-          unawaited(Future<void>.delayed(const Duration(seconds: 2), () async {
-            if (_wantConnected) {
-              try {
-                await dev.connect(autoConnect: false, timeout: const Duration(seconds: 10));
-              } catch (_) {}
-            }
-          }));
-        } else {
+          _scheduleReconnect(dev);
+        } else if (!_wantConnected) {
           _set(BleState.idle);
         }
       }
     });
     try {
-      await dev.connect(autoConnect: false, timeout: const Duration(seconds: 12));
-      await _discover(dev);
-      await _store.setLastBleId(remoteId);
+      await dev
+          .connect(autoConnect: false, timeout: const Duration(seconds: 12))
+          .timeout(const Duration(seconds: 15));
+      await _discover(dev).timeout(const Duration(seconds: 25));
+      await _store.setLastBleId(remoteId).timeout(const Duration(seconds: 3));
+      _linkEstablished = true;
     } catch (e) {
+      // A GATT operation can stall after the link opens. Stop auto-reconnect
+      // and close the partial connection so the UI can try again cleanly.
+      _wantConnected = false;
+      _linkEstablished = false;
+      _reconnectQueued = false;
+      try {
+        await dev.disconnect().timeout(const Duration(seconds: 4));
+      } catch (_) {}
+      _teardownChars();
+      connectedName = null;
+      connectedId = null;
       _set(BleState.idle);
       rethrow;
     }
   }
 
+  void _scheduleReconnect(BluetoothDevice dev) {
+    if (_reconnectQueued) return;
+    _reconnectQueued = true;
+    // Auto-heal only after a completed connection. The initial disconnected
+    // state emitted by Android must not start a second connect attempt.
+    unawaited(Future<void>.delayed(const Duration(seconds: 2), () async {
+      _reconnectQueued = false;
+      if (!_wantConnected) return;
+      try {
+        await dev
+            .connect(autoConnect: false, timeout: const Duration(seconds: 10))
+            .timeout(const Duration(seconds: 12));
+        await _discover(dev).timeout(const Duration(seconds: 25));
+        _linkEstablished = true;
+      } catch (_) {
+        _wantConnected = false;
+        _linkEstablished = false;
+        _teardownChars();
+        connectedName = null;
+        connectedId = null;
+        _set(BleState.idle);
+      }
+    }));
+  }
+
   Future<void> _discover(BluetoothDevice dev) async {
     try {
-      await dev.requestMtu(185); // room for the full JSON in one notification
+      // The ESP32 advertises an MTU of 100. Vitals are small and chunk
+      // reassembly below handles notifications split across packets.
+      await dev.requestMtu(100).timeout(const Duration(seconds: 5));
     } catch (_) {}
-    final services = await dev.discoverServices();
-    final svc = services.firstWhere((s) => s.uuid == Guid(Config.bleService), orElse: () => throw StateError('Jeevan service not found'));
+    final services = await dev.discoverServices().timeout(
+          const Duration(seconds: 12),
+          onTimeout: () =>
+              throw TimeoutException('Watch service discovery timed out'),
+        );
+    final svc = services.firstWhere((s) => s.uuid == Guid(Config.bleService),
+        orElse: () => throw StateError('Jeevan service not found'));
     for (final c in svc.characteristics) {
       if (c.uuid == Guid(Config.bleVitalsChar)) {
-        await c.setNotifyValue(true);
+        await c.setNotifyValue(true).timeout(
+              const Duration(seconds: 6),
+              onTimeout: () =>
+                  throw TimeoutException('Vitals notification setup timed out'),
+            );
         _vSub = c.lastValueStream.listen(_onVitalsChunk);
       } else if (c.uuid == Guid(Config.bleEventChar)) {
-        await c.setNotifyValue(true);
+        await c.setNotifyValue(true).timeout(
+              const Duration(seconds: 6),
+              onTimeout: () =>
+                  throw TimeoutException('Event notification setup timed out'),
+            );
         _eSub = c.lastValueStream.listen(_onEvent);
       } else if (c.uuid == Guid(Config.bleCommandChar)) {
         _cmd = c;
       }
     }
-    connectedName = dev.platformName.isEmpty ? 'Jeevan device' : dev.platformName;
+    if (_vSub == null || _cmd == null) {
+      throw StateError('VitaWatch service is missing required characteristics');
+    }
+    connectedName =
+        dev.platformName.isEmpty ? 'Jeevan device' : dev.platformName;
+    connectedId = dev.remoteId.str;
     _set(BleState.connected);
+    // Keep the watch RTC correct so its on-device medicine schedule survives
+    // the removal of watch-side Wi-Fi and server time polling.
+    try {
+      final now = DateTime.now();
+      final epochSeconds =
+          now.millisecondsSinceEpoch ~/ 1000 + now.timeZoneOffset.inSeconds;
+      await _cmd!
+          .write(utf8.encode('set_time:$epochSeconds'), withoutResponse: false)
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {
+      // Older firmware ignores clock sync; BLE readings remain usable.
+    }
   }
 
   // Notifications can be split across packets if the MTU was not negotiated: reassemble on newline.
@@ -157,15 +233,16 @@ class BleService {
     if (line.isEmpty) return;
     try {
       final j = jsonDecode(line) as Map<String, dynamic>;
-      int? i(String k) => j[k] is num && (j[k] as num) > 0 ? (j[k] as num).toInt() : null;
-      final t = j['t'] is num && (j['t'] as num) > 0 ? (j['t'] as num).toDouble() : null;
+      int? i(String k) =>
+          j[k] is num && (j[k] as num) > 0 ? (j[k] as num).toInt() : null;
+      final t = j['t'] is num && (j['t'] as num) > 0
+          ? (j['t'] as num).toDouble()
+          : null;
       _samples.add(BleSample(
         Vitals(
           heartRate: i('hr'),
           spo2: i('spo2'),
           temperature: t,
-          ecgBpm: i('ecg'),
-          leadOff: j['lo'] == 1 || j['lo'] == true,
           fingerDetected: j['f'] == 1 || j['f'] == true,
         ),
         DateTime.now(),
@@ -192,7 +269,9 @@ class BleService {
   /// Reconnect to the last-paired watch (called on app start / foreground).
   Future<void> autoConnect() async {
     final id = _store.lastBleId;
-    if (id == null || current == BleState.connected || current == BleState.connecting) return;
+    if (id == null ||
+        current == BleState.connected ||
+        current == BleState.connecting) return;
     if (!await supported) return;
     try {
       await connect(id);
@@ -201,10 +280,13 @@ class BleService {
 
   Future<void> disconnect() async {
     _wantConnected = false;
+    _linkEstablished = false;
+    _reconnectQueued = false;
     await _store.setLastBleId(null);
     await _dev?.disconnect();
     _teardownChars();
     connectedName = null;
+    connectedId = null;
     _set(BleState.idle);
   }
 

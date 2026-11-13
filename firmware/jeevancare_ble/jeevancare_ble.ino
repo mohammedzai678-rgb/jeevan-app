@@ -1,9 +1,5 @@
 
 #include <Wire.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <esp_system.h>
@@ -11,7 +7,6 @@
 #include "MAX30205.h"
 #include "DHT.h"
 #include <RTClib.h>
-#include <time.h>
 #include "config.h"
 #include "jeevan_ble.h"
 
@@ -25,6 +20,59 @@ bool rtcFound = false;
 volatile bool reminderLedActive = false;
 char reminderSlotName[16] = "";
 volatile unsigned long reminderSuppressedUntil = 0;
+static uint16_t reminderMinutes[12] = {480, 780, 1200};
+static uint8_t reminderCount = 3;
+
+// Button self-test: open Serial Monitor at 115200 baud. Startup prints the
+// idle pin levels; each raw and debounced press/release prints a [BTN_TEST]
+// line. SOS is active-low on GPIO 27 (or BOOT GPIO 0) and needs a 1.5 s hold.
+// Medicine is active-low on GPIO 21 and responds to a short press. Wire each
+// button between its GPIO and GND; INPUT_PULLUP supplies the idle HIGH level.
+struct ButtonInput {
+  uint8_t pin;
+  const char* label;
+  bool initialized;
+  bool lastRawPressed;
+  bool pressed;
+  unsigned long rawChangedAt;
+};
+
+static ButtonInput sosButtonInput = {SOS_BUTTON_PIN, "SOS", false, false, false, 0};
+static ButtonInput bootButtonInput = {BOOT_BUTTON_PIN, "SOS_BOOT", false, false, false, 0};
+static ButtonInput medicineButtonInput = {MEDICINE_BUTTON_PIN, "MEDICINE", false, false, false, 0};
+
+static bool pollButton(ButtonInput& button, unsigned long now) {
+  const bool rawPressed = digitalRead(button.pin) == LOW;
+  if (!button.initialized) {
+    button.initialized = true;
+    button.lastRawPressed = rawPressed;
+    button.rawChangedAt = now;
+    if (BUTTON_DIAGNOSTICS) {
+      Serial.printf("[BTN_TEST] %s GPIO %u startup level=%s (%s)\n",
+                    button.label, button.pin, rawPressed ? "LOW" : "HIGH",
+                    rawPressed ? "pressed" : "released");
+    }
+  } else if (rawPressed != button.lastRawPressed) {
+    button.lastRawPressed = rawPressed;
+    button.rawChangedAt = now;
+    if (BUTTON_DIAGNOSTICS) {
+      Serial.printf("[BTN_TEST] %s GPIO %u raw=%s\n",
+                    button.label, button.pin, rawPressed ? "LOW" : "HIGH");
+    }
+  }
+
+  if (rawPressed != button.pressed &&
+      now - button.rawChangedAt >= BUTTON_DEBOUNCE_MS) {
+    button.pressed = rawPressed;
+    if (BUTTON_DIAGNOSTICS) {
+      Serial.printf("[BTN_TEST] %s GPIO %u %s (debounced)\n",
+                    button.label, button.pin,
+                    button.pressed ? "PRESSED" : "RELEASED");
+    }
+    return true;
+  }
+  return false;
+}
 
 // -----------------------------------------------------------------------------
 // Commands are stored as a small integer so they can be shared between cores
@@ -35,34 +83,20 @@ enum DeviceCommand : uint8_t {
   CMD_IDLE = 0,
   CMD_READ_MAX30102 = 1,
   CMD_READ_DHT11 = 2,   // body temperature (MAX30205, DHT11 fallback)
-  CMD_READ_AD8232 = 3,
 };
 
-volatile uint8_t currentCmd = CMD_IDLE;
-
-static uint8_t commandFromString(const char* s) {
-  if (!s) return 255;
-  if (strcmp(s, "idle") == 0) return CMD_IDLE;
-  if (strcmp(s, "read_max30102") == 0) return CMD_READ_MAX30102;
-  if (strcmp(s, "read_dht11") == 0) return CMD_READ_DHT11;
-  if (strcmp(s, "read_max30205") == 0) return CMD_READ_DHT11;
-  if (strcmp(s, "read_ad8232") == 0) return CMD_READ_AD8232;
-  return 255; // unknown
-}
+volatile uint8_t currentCmd = CMD_READ_MAX30102;
 
 static const char* commandName(uint8_t c) {
   switch (c) {
     case CMD_READ_MAX30102: return "read_max30102";
     case CMD_READ_DHT11: return "read_dht11";
-    case CMD_READ_AD8232: return "read_ad8232";
     default: return "idle";
   }
 }
 
 // State variables (shared between Core 0 and Core 1)
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
-volatile bool serverReachable = false;
-volatile uint32_t consecutiveNetFailures = 0;
 
 // MAX30102 Real-time state
 volatile long lastIrValue = 0;
@@ -108,19 +142,10 @@ int bpmBufferIdx = 0;
 float spo2Buffer[SPO2_BUFFER_SIZE];
 int spo2BufferIdx = 0;
 
-// AD8232 State
-volatile int ecgValue = 0;
-volatile int ecgBPM = 0;
-volatile bool ecgLeadsOff = true;
-unsigned long lastEcgPeak = 0;
-
 // DHT11 State (ambient backup)
 volatile float dhtTemperature = 0.0f;
 volatile float dhtHumidity = 0.0f;
 volatile bool dhtValid = false;
-
-// Background Network Task Handle
-TaskHandle_t NetworkTaskHandle = NULL;
 
 // -----------------------------------------------------------------------------
 // Core 1 Sensor Processing: MAX30102 (Calibrated for Human Body Accuracy)
@@ -292,30 +317,6 @@ void processMax30102() {
   lastIrAC = irAC;
 }
 
-// -----------------------------------------------------------------------------
-// Core 1 Sensor Processing: AD8232 ECG
-// -----------------------------------------------------------------------------
-void processAD8232() {
-  bool leadsOff = (digitalRead(AD8232_LO_PLUS_PIN) == 1 || digitalRead(AD8232_LO_MINUS_PIN) == 1);
-  int rawEcg = leadsOff ? 0 : analogRead(AD8232_OUTPUT_PIN);
-  int newBpm = -1;
-
-  if (!leadsOff && rawEcg > 3000) {
-    unsigned long now = millis();
-    if (now - lastEcgPeak > 400) {
-      int delta = now - lastEcgPeak;
-      newBpm = 60000 / delta;
-      lastEcgPeak = now;
-    }
-  }
-
-  portENTER_CRITICAL(&stateMux);
-  ecgLeadsOff = leadsOff;
-  ecgValue = rawEcg;
-  if (newBpm >= 0) ecgBPM = newBpm;
-  portEXIT_CRITICAL(&stateMux);
-}
-
 // Direct I2C read for MAX30205 Clinical Body Temp Sensor
 float readDirectMAX30205(uint8_t addr) {
   Wire.beginTransmission(addr);
@@ -425,317 +426,6 @@ void processTemperature() {
 }
 
 // -----------------------------------------------------------------------------
-// Core 0 Background Network Task (Non-Blocking)
-// -----------------------------------------------------------------------------
-static bool beginHttp(HTTPClient& http, WiFiClient& plain, WiFiClientSecure& secure, const String& url) {
-  http.setReuse(false);
-  http.setConnectTimeout(10000);
-  http.setTimeout(10000);
-  if (url.startsWith("https")) {
-    secure.setInsecure();
-    secure.setTimeout(10);
-    return http.begin(secure, url);
-  }
-  return http.begin(plain, url);
-}
-
-static void applyCommandFromJson(JsonDocument& doc) {
-  // BLE command pinning takes priority over cloud polling commands until "auto" is sent or BLE disconnects
-  uint8_t pinnedCmd = CMD_IDLE;
-  if (bleGetPinnedCommand(&pinnedCmd)) {
-    if (currentCmd != pinnedCmd) {
-      currentCmd = pinnedCmd;
-    }
-    return;
-  }
-
-  const char* cmd = doc["command"];
-  uint8_t c = commandFromString(cmd);
-  if (c == 255) return;
-  if (c != currentCmd) {
-    currentCmd = c;
-    if (DEBUG_MODE) Serial.printf("[Core0] Command updated: %s\n", commandName(c));
-  }
-}
-
-static void noteNetResult(bool ok) {
-  if (ok) {
-    if (!serverReachable && DEBUG_MODE) Serial.println("[Core0] Server reachable again");
-    serverReachable = true;
-    consecutiveNetFailures = 0;
-  } else {
-    serverReachable = false;
-    consecutiveNetFailures++;
-  }
-}
-
-// Returns true if the server answered and the reply already contained the command.
-bool networkPollCommand() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-
-  HTTPClient http;
-  WiFiClient plainClient;
-  WiFiClientSecure secureClient;
-  String url = String(COMMAND_POLL_URL) + "?device_id=" + DEVICE_ID + "&api_key=" + DEVICE_API_KEY;
-  if (!beginHttp(http, plainClient, secureClient, url)) {
-    noteNetResult(false);
-    return false;
-  }
-  int httpCode = http.GET();
-
-  bool ok = false;
-  if (httpCode == HTTP_CODE_OK) {
-    String payload = http.getString();
-    JsonDocument doc;
-    if (!deserializeJson(doc, payload)) {
-      applyCommandFromJson(doc);
-      if (doc["reminder_led"].is<bool>()) {
-        bool active = doc["reminder_led"].as<bool>();
-        if (active && millis() < reminderSuppressedUntil) {
-          active = false;
-        }
-        portENTER_CRITICAL(&stateMux);
-        reminderLedActive = active;
-        if (active && doc["reminder_slot"].is<const char*>()) {
-          strncpy(reminderSlotName, doc["reminder_slot"].as<const char*>(), sizeof(reminderSlotName) - 1);
-        } else if (!active) {
-          reminderSlotName[0] = '\0';
-        }
-        portEXIT_CRITICAL(&stateMux);
-        digitalWrite(INDICATOR_LED_PIN, active ? HIGH : LOW);
-      }
-      ok = true;
-    }
-  } else if (DEBUG_MODE) {
-    Serial.printf("[Core0] Poll command failed (code %d: %s)\n", httpCode, http.errorToString(httpCode).c_str());
-  }
-  http.end();
-  noteNetResult(httpCode > 0);
-  return ok;
-}
-
-// Posts the active sensor's data. The server's reply also carries the current
-// command, so the ESP32 picks up new commands within ~1 s.
-// Returns true if the reply contained a command.
-bool networkStreamData() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-
-  // Snapshot states safely (plain values only, no heap work inside the lock)
-  uint8_t cmd = currentCmd;
-  long irVal, redVal;
-  bool finger;
-  int hr, ox;
-  bool hrValid, oxValid;
-  int ecgValSnapshot, ecgBpmSnapshot;
-  bool ecgOffSnapshot;
-  float tempSnapshot, humSnapshot, bTempSnapshot, rawSkinSnapshot;
-  bool dhtOkSnapshot, bTempOkSnapshot;
-
-  portENTER_CRITICAL(&stateMux);
-  irVal = lastIrValue;
-  redVal = lastRedValue;
-  finger = fingerDetected;
-  hr = heartRate;
-  ox = spo2;
-  hrValid = validHeartRate;
-  oxValid = validSPO2;
-  ecgValSnapshot = ecgValue;
-  ecgBpmSnapshot = ecgBPM;
-  ecgOffSnapshot = ecgLeadsOff;
-  tempSnapshot = dhtTemperature;
-  humSnapshot = dhtHumidity;
-  dhtOkSnapshot = dhtValid;
-  bTempSnapshot = bodyTemperature;
-  bTempOkSnapshot = bodyTempValid;
-  rawSkinSnapshot = rawSkinTemperature;
-  portEXIT_CRITICAL(&stateMux);
-
-  JsonDocument doc;
-  doc["device_id"] = DEVICE_ID;
-  doc["api_key"] = DEVICE_API_KEY;
-  doc["timestamp"] = millis();
-  doc["command"] = commandName(cmd);
-
-  JsonObject data = doc["data"].to<JsonObject>();
-  data["max30102_found"] = max30102Found;
-  data["max30205_found"] = (bool)max30205Found;
-  data["ble_connected"] = bleIsConnected();
-  data["rssi"] = WiFi.RSSI();
-  data["free_heap"] = ESP.getFreeHeap();
-
-  if (cmd == CMD_IDLE) {
-    doc["sensor"] = "idle";
-    data["status"] = "standby";
-    data["signal_quality"] = "GOOD";
-  } else if (cmd == CMD_READ_MAX30102) {
-    doc["sensor"] = "max30102";
-    data["ir_value"] = finger ? irVal : 0;
-    data["red_value"] = finger ? redVal : 0;
-    data["finger_detected"] = finger;
-
-    if (!max30102Found) {
-      data["heart_rate"] = 0;
-      data["heart_rate_valid"] = false;
-      data["spo2"] = 0;
-      data["spo2_valid"] = false;
-      data["signal_quality"] = "SENSOR_NOT_FOUND";
-    } else if (finger) {
-      data["heart_rate"] = hr;
-      data["heart_rate_valid"] = hrValid;
-      data["spo2"] = ox;
-      data["spo2_valid"] = oxValid;
-      data["signal_quality"] = (hrValid && oxValid) ? "GOOD" : "CALIBRATING";
-    } else {
-      data["heart_rate"] = 0;
-      data["heart_rate_valid"] = false;
-      data["spo2"] = 0;
-      data["spo2_valid"] = false;
-      data["signal_quality"] = "NONE";
-    }
-  } else if (cmd == CMD_READ_DHT11) {
-    doc["sensor"] = "dht11";
-    // Prefer clinical MAX30205 body temperature if available, else DHT11
-    if (bTempOkSnapshot) {
-      data["temperature"] = round(bTempSnapshot * 10.0f) / 10.0f;
-      data["raw_skin_temp"] = round(rawSkinSnapshot * 10.0f) / 10.0f;
-      data["temperature_f"] = round((bTempSnapshot * 1.8f + 32.0f) * 10.0f) / 10.0f;
-      data["humidity"] = dhtOkSnapshot ? humSnapshot : 50.0f;
-      data["valid"] = true;
-      data["sensor_model"] = "MAX30205";
-      data["signal_quality"] = "GOOD";
-    } else if (dhtOkSnapshot) {
-      data["temperature"] = tempSnapshot;
-      data["humidity"] = humSnapshot;
-      data["valid"] = true;
-      data["sensor_model"] = "DHT11";
-      data["signal_quality"] = "GOOD";
-      if (rawSkinSnapshot > 15.0f) {
-        data["raw_skin_temp"] = round(rawSkinSnapshot * 10.0f) / 10.0f;
-      }
-    } else {
-      data["valid"] = false;
-      if (rawSkinSnapshot > 15.0f) {
-        data["raw_skin_temp"] = round(rawSkinSnapshot * 10.0f) / 10.0f;
-      }
-      data["signal_quality"] = max30205Found ? "CALIBRATING" : "SENSOR_NOT_FOUND";
-    }
-  } else if (cmd == CMD_READ_AD8232) {
-    doc["sensor"] = "ad8232";
-    data["lead_off"] = ecgOffSnapshot;
-    data["ecg_value"] = ecgValSnapshot;
-    data["ecg_bpm"] = ecgBpmSnapshot;
-    data["ecg_bpm_valid"] = (!ecgOffSnapshot && ecgBpmSnapshot > 0);
-  }
-
-  String jsonStr;
-  serializeJson(doc, jsonStr);
-
-  HTTPClient http;
-  WiFiClient plainClient;
-  WiFiClientSecure secureClient;
-  if (!beginHttp(http, plainClient, secureClient, String(LIVE_STREAM_URL))) {
-    noteNetResult(false);
-    return false;
-  }
-  http.addHeader("Content-Type", "application/json");
-  int code = http.POST(jsonStr);
-
-  bool gotCommand = false;
-  if (code == HTTP_CODE_OK) {
-    String payload = http.getString();
-    JsonDocument reply;
-    if (!deserializeJson(reply, payload)) {
-      if (reply["command"].is<const char*>()) {
-        applyCommandFromJson(reply);
-        gotCommand = true;
-      }
-      if (reply["reminder_led"].is<bool>()) {
-        bool active = reply["reminder_led"].as<bool>();
-        if (active && millis() < reminderSuppressedUntil) {
-          active = false;
-        }
-        portENTER_CRITICAL(&stateMux);
-        reminderLedActive = active;
-        if (active && reply["reminder_slot"].is<const char*>()) {
-          strncpy(reminderSlotName, reply["reminder_slot"].as<const char*>(), sizeof(reminderSlotName) - 1);
-        } else if (!active) {
-          reminderSlotName[0] = '\0';
-        }
-        portEXIT_CRITICAL(&stateMux);
-        digitalWrite(INDICATOR_LED_PIN, active ? HIGH : LOW);
-      }
-    }
-  }
-
-  if (DEBUG_MODE) {
-    if (code > 0) {
-      Serial.printf("[Core0] Stream POST %d (%s)\n", code, commandName(cmd));
-    } else {
-      Serial.printf("[Core0] Stream POST failed (code %d: %s) -> %s\n", code, http.errorToString(code).c_str(), LIVE_STREAM_URL);
-    }
-  }
-  http.end();
-  noteNetResult(code > 0);
-  return gotCommand;
-}
-
-void networkTask(void *pvParameters) {
-  unsigned long lastPoll = 0;
-  unsigned long lastStream = 0;
-  unsigned long lastReconnectAttempt = 0;
-  unsigned long lastDiag = 0;
-
-  for (;;) {
-    unsigned long now = millis();
-
-    if (DEBUG_MODE && now - lastDiag >= 30000) {
-      lastDiag = now;
-      Serial.printf("[Diag] up=%lus heap=%u minHeap=%u stackFree=%u wifi=%d rssi=%d ble=%d server=%s cmd=%s\n",
-                    now / 1000, ESP.getFreeHeap(), ESP.getMinFreeHeap(),
-                    (unsigned)uxTaskGetStackHighWaterMark(NULL), (int)WiFi.status(), WiFi.RSSI(),
-                    bleIsConnected() ? 1 : 0, serverReachable ? "OK" : "DOWN", commandName(currentCmd));
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      unsigned long streamInterval = bleIsConnected() ? WIFI_STREAM_BLE_CONNECTED_MS : LIVE_STREAM_INTERVAL_MS;
-      if (now - lastStream >= streamInterval) {
-        lastStream = now;
-        if (networkStreamData()) {
-          lastPoll = now; // the stream reply already carried the command
-        }
-      }
-
-      if (now - lastPoll >= COMMAND_POLL_INTERVAL_MS) {
-        lastPoll = now;
-        networkPollCommand();
-      }
-
-      // Self-heal: if the server has been unreachable for a while, rebuild the Wi-Fi link.
-      if (consecutiveNetFailures >= 20 && now - lastReconnectAttempt >= 45000) {
-        lastReconnectAttempt = now;
-        if (DEBUG_MODE) {
-          Serial.printf("[Core0] %u failures in a row. Reconnecting Wi-Fi...\n", (unsigned)consecutiveNetFailures);
-        }
-        WiFi.reconnect();
-        consecutiveNetFailures = 0;
-      }
-
-      // Back off a little while the server is down, so we do not flood the log/stack
-      vTaskDelay(pdMS_TO_TICKS(serverReachable ? 50 : 500));
-    } else {
-      serverReachable = false;
-      // Let ESP32 autoReconnect do its job; only poke after 30 seconds
-      if (now - lastReconnectAttempt >= 30000) {
-        lastReconnectAttempt = now;
-        if (DEBUG_MODE) Serial.println("[Core0] WiFi reconnecting...");
-        WiFi.reconnect();
-      }
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-  }
-}
-
-// -----------------------------------------------------------------------------
 // OLED Display Update (Runs on Core 1)
 // -----------------------------------------------------------------------------
 void updateOLED() {
@@ -770,19 +460,7 @@ void updateOLED() {
   display.setCursor(0, 0);
 
   bool bleActive = bleIsConnected();
-  if (WiFi.status() != WL_CONNECTED) {
-    static bool toggle = false;
-    toggle = !toggle;
-    if (bleActive) {
-      display.println("BLE OK   WIFI OFFLINE");
-    } else {
-      display.println(toggle ? "WIFI CONNECTING..." : "WIFI OFFLINE");
-    }
-  } else if (!serverReachable) {
-    display.println(bleActive ? "BLE+WIFI OK  SRV DOWN" : "WIFI OK  SERVER DOWN");
-  } else {
-    display.println(bleActive ? "BLE+WIFI OK  CLOUD OK" : "WIFI OK  SERVER OK");
-  }
+  display.println(bleActive ? "PHONE LINKED: BLE" : "READY: CONNECT PHONE");
 
   display.setCursor(0, 16);
 
@@ -790,8 +468,6 @@ void updateOLED() {
   bool finger;
   int hr, ox;
   bool hrValid, oxValid;
-  bool leadsOff;
-  int ecgBpmSnap;
   float bTemp;
   bool bTempOk;
   float rawSkin;
@@ -804,8 +480,6 @@ void updateOLED() {
   ox = spo2;
   hrValid = validHeartRate;
   oxValid = validSPO2;
-  leadsOff = ecgLeadsOff;
-  ecgBpmSnap = ecgBPM;
   bTemp = bodyTemperature;
   bTempOk = bodyTempValid;
   rawSkin = rawSkinTemperature;
@@ -815,10 +489,29 @@ void updateOLED() {
   portEXIT_CRITICAL(&stateMux);
 
   if (cmd == CMD_IDLE) {
-    display.println("WAITING FOR");
-    display.println("COMMAND...");
-    if (bleActive) {
-      display.println("BLE 10Hz Connected");
+    if (finger && max30102Found) {
+      if (!hrValid) {
+        display.setTextSize(1);
+        display.println("MEASURING PULSE...");
+        display.println("Hold finger steady");
+        display.printf("Sampling: %d/3\n", min(bpmBufferIdx, 3));
+      } else {
+        display.setTextSize(1);
+        display.println("HR & SpO2 Active");
+        display.setTextSize(2);
+        display.printf("%d BPM\n", hr);
+        display.setTextSize(1);
+        display.printf("SpO2: %d %%\n", oxValid ? ox : 98);
+      }
+    } else {
+      display.println("JEEVAN READY");
+      if (bleActive) {
+        display.println("BLE Connected OK");
+        display.println("Place finger to test");
+      } else {
+        display.println("Waiting for connect");
+        display.println("Place finger to test");
+      }
     }
   } else if (cmd == CMD_READ_MAX30102) {
     if (!max30102Found) {
@@ -874,13 +567,6 @@ void updateOLED() {
         display.println("Check I2C wiring");
       }
     }
-  } else if (cmd == CMD_READ_AD8232) {
-    display.println("AD8232 ECG Active");
-    if (leadsOff) {
-      display.println("LEADS OFF!");
-    } else {
-      display.printf("ECG: %d BPM\n", ecgBpmSnap);
-    }
   }
 
   display.display();
@@ -920,19 +606,8 @@ static void i2cScan() {
   Serial.println("[I2C] Expected: 0x3C OLED, 0x57 MAX30102, 0x48-0x4F MAX30205");
 }
 
-static void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
-  if (!DEBUG_MODE) return;
-  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-    Serial.printf("[WiFi] Disconnected, reason %d\n", info.wifi_sta_disconnected.reason);
-  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-    Serial.print("[WiFi] Got IP: ");
-    Serial.println(WiFi.localIP());
-  }
-}
-
-// -----------------------------------------------------------------------------
 // Clear Medicine Reminder
-// Turns off LED, resets OLED, emits BLE med_ack event, sends HTTPS POST to backend
+// Turns off the local reminder and notifies the phone over BLE.
 // -----------------------------------------------------------------------------
 void clearMedicineReminder() {
   portENTER_CRITICAL(&stateMux);
@@ -955,133 +630,44 @@ void clearMedicineReminder() {
   display.display();
   delay(1000);
 
-  if (DEBUG_MODE) Serial.println("[Reminder] Cleared by button! Sending BLE & HTTP acknowledge...");
-
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    WiFiClient plain;
-    WiFiClientSecure secure;
-    if (beginHttp(http, plain, secure, REMINDER_ACK_URL)) {
-      http.addHeader("Content-Type", "application/json");
-      http.setTimeout(8000);
-      http.POST("{\"device_id\":\"" DEVICE_ID "\",\"api_key\":\"" DEVICE_API_KEY "\"}");
-      http.end();
-      if (DEBUG_MODE) Serial.println("[Reminder] Server acknowledge complete.");
-    }
-  }
+  if (DEBUG_MODE) Serial.println("[Reminder] Cleared; phone notified over BLE.");
 }
 
 // -----------------------------------------------------------------------------
-// Hardware SOS Trigger (GPIO 27, Hold/Press)
-// Dispatches immediate emergency alert over BLE + HTTPS with vitals & GPS to backend
-// -----------------------------------------------------------------------------
+// Hardware SOS Trigger: notify the phone over BLE; the phone performs the account dispatch.
 void triggerHardwareSos() {
-  if (DEBUG_MODE) Serial.println("\n🚨 [SOS] HARDWARE SOS BUTTON TRIGGERED (GPIO 27)!");
+  if (DEBUG_MODE) Serial.println("[SOS] Hardware SOS pressed.");
+  const bool phoneLinked = bleIsConnected();
+  if (phoneLinked) bleNotifyEvent("sos");
 
-  // 0. Immediate low-latency BLE event notification to phone
-  bleNotifyEvent("sos");
-
-  // 1. Immediate visual feedback: rapid LED strobe
   for (int i = 0; i < 6; i++) {
     digitalWrite(INDICATOR_LED_PIN, HIGH);
-    delay(50);
+    delay(70);
     digitalWrite(INDICATOR_LED_PIN, LOW);
-    delay(50);
+    delay(70);
   }
 
-  // 2. Immediate OLED screen takeover
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
   display.setTextSize(2);
-  display.setCursor(10, 8);
-  display.println("🚨 SOS! 🚨");
+  display.setCursor(0, 8);
+  display.println("SOS ALERT");
   display.setTextSize(1);
-  display.setCursor(0, 34);
-  display.println("DISPATCHING ALERT...");
-  display.setCursor(0, 48);
-  display.println("BLE + CLOUD DISPATCH");
+  display.setCursor(0, 36);
+  display.println(phoneLinked ? "Sent to phone over BLE" : "Phone not connected");
   display.display();
-
-  // 3. Collect snapshot vitals
-  int hrSnap = 0, spo2Snap = 0;
-  float tempSnap = 0;
-  portENTER_CRITICAL(&stateMux);
-  hrSnap = fingerDetected && validHeartRate ? heartRate : 75;
-  spo2Snap = fingerDetected && validSPO2 ? spo2 : 98;
-  tempSnap = bodyTempValid ? bodyTemperature : (dhtValid ? dhtTemperature : 36.6);
-  portEXIT_CRITICAL(&stateMux);
-
-  // 4. Build JSON payload
-  JsonDocument doc;
-  doc["device_id"] = DEVICE_ID;
-  doc["api_key"] = DEVICE_API_KEY;
-
-  JsonObject loc = doc["location"].to<JsonObject>();
-  loc["lat"] = 12.9716; // default Bangalore coordinates (or NEO-6M fix)
-  loc["lng"] = 77.5946;
-  loc["fix"] = false;
-  loc["satellites"] = 0;
-  loc["speed_kmh"] = 0;
-
-  JsonObject vitals = doc["vitals"].to<JsonObject>();
-  vitals["heart_rate"] = hrSnap;
-  vitals["spo2"] = spo2Snap;
-  vitals["temperature"] = tempSnap;
-
-  String body;
-  serializeJson(doc, body);
-
-  // 5. POST to SOS_ALERT_URL
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    WiFiClient plain;
-    WiFiClientSecure secure;
-    if (beginHttp(http, plain, secure, SOS_ALERT_URL)) {
-      http.addHeader("Content-Type", "application/json");
-      http.setTimeout(8000);
-      int code = http.POST(body);
-      if (DEBUG_MODE) Serial.printf("[SOS] Alert POST returned %d\n", code);
-      http.end();
-
-      display.clearDisplay();
-      display.setCursor(0, 10);
-      display.setTextSize(2);
-      display.println("SOS SENT!");
-      display.setTextSize(1);
-      display.setCursor(0, 36);
-      display.println("Email & SMS dispatched");
-      display.setCursor(0, 50);
-      display.println("Help is on the way!");
-      display.display();
-      delay(2500);
-    }
-  } else {
-    if (DEBUG_MODE) Serial.println("[SOS] WiFi offline — BLE alert sent if phone connected.");
-    display.clearDisplay();
-    display.setCursor(0, 14);
-    display.setTextSize(1);
-    if (bleIsConnected()) {
-      display.println("SOS SENT VIA BLE!");
-      display.println("Phone notified.");
-    } else {
-      display.println("SOS ALERT FAILED:");
-      display.println("WiFi Disconnected!");
-    }
-    display.display();
-    delay(2000);
-  }
+  delay(1800);
 }
-
-// -----------------------------------------------------------------------------
 // Setup & Loop
 // -----------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  delay(100);
+  delay(500);
+
   if (DEBUG_MODE) {
-    Serial.println("\n--- JeevanCare VitalWatch (BLE + WiFi) Booting ---");
+    Serial.println("\n--- JeevanCare VitaWatch (BLE-only) Booting ---");
     Serial.printf("Reset reason: %s\n", resetReasonText(esp_reset_reason()));
-    Serial.printf("Backend: %s\n", BACKEND_BASE_URL);
+    Serial.printf("Free heap at boot: %u bytes\n", ESP.getFreeHeap());
   }
 
   // Init OLED & I2C Bus
@@ -1118,61 +704,12 @@ void setup() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 20);
-    display.println("STARTING BLE & WIFI");
+    display.println("STARTING BLUETOOTH");
     display.display();
   }
 
   // Init BLE GATT Server ("Jeevan-VitaWatch")
   bleBegin("VitaWatch");
-
-  // Init WiFi
-  WiFi.onEvent(onWiFiEvent);
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.setSleep(false); // CRITICAL: Disable modem sleep to prevent hotspot disconnection
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  if (DEBUG_MODE) {
-    Serial.printf("\nConnecting to Wi-Fi '%s'...\n", WIFI_SSID);
-  }
-
-  // Wait up to 15 seconds for initial connection (mobile hotspot needs more time)
-  unsigned long startWifi = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - startWifi < 15000)) {
-    delay(500);
-    if (DEBUG_MODE) Serial.print(".");
-  }
-  // Extra settle time for DNS/routing to become available on mobile hotspot
-  if (WiFi.status() == WL_CONNECTED) {
-    delay(2000);
-    if (DEBUG_MODE) Serial.println("\n[WiFi] Post-connect settle done");
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    // Force Google DNS — mobile hotspots often have broken DNS
-    IPAddress dns1(8, 8, 8, 8);
-    IPAddress dns2(8, 8, 4, 4);
-    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
-
-    if (DEBUG_MODE) {
-      Serial.println("\nWiFi Connected!");
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-      Serial.print("DNS: ");
-      Serial.println(WiFi.dnsIP());
-      Serial.printf("Free Heap: %u bytes\n", ESP.getFreeHeap());
-
-      // Quick DNS test
-      IPAddress resolved;
-      if (WiFi.hostByName("jeevan-app-backend-production.up.railway.app", resolved)) {
-        Serial.printf("[DNS] Resolved to %s\n", resolved.toString().c_str());
-      } else {
-        Serial.println("[DNS] FAILED to resolve backend hostname!");
-      }
-    }
-  } else {
-    if (DEBUG_MODE) Serial.println("\nWiFi initial connect timeout, auto-reconnect + BLE active.");
-  }
 
   // Auto-scan for CJMCU-30205 (MAX30205) on I2C bus (0x48 to 0x4F)
   detectedMax30205Addr = findMAX30205Address();
@@ -1206,8 +743,6 @@ void setup() {
   }
 
   dht.begin();
-  pinMode(AD8232_LO_PLUS_PIN, INPUT);
-  pinMode(AD8232_LO_MINUS_PIN, INPUT);
 
   pinMode(INDICATOR_LED_PIN, OUTPUT);
   digitalWrite(INDICATOR_LED_PIN, HIGH);
@@ -1215,30 +750,61 @@ void setup() {
   digitalWrite(INDICATOR_LED_PIN, LOW);
   pinMode(MEDICINE_BUTTON_PIN, INPUT_PULLUP);
   pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(0, INPUT_PULLUP); // Onboard BOOT button fallback
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP); // Onboard BOOT button fallback
 
   rtcFound = rtc.begin();
   if (rtcFound && DEBUG_MODE) {
     Serial.println("[RTC] DS3231 RTC initialized at 0x68 OK!");
   }
 
-  // Launch background network task on Core 0 (larger stack: HTTP + JSON + Strings)
-  xTaskCreatePinnedToCore(
-    networkTask,
-    "NetworkTask",
-    12288,
-    NULL,
-    1,
-    &NetworkTaskHandle,
-    0 // Core 0
-  );
-
-  if (DEBUG_MODE) Serial.println("Setup Complete. BLE advertising + Network task pinned to Core 0.");
+  if (DEBUG_MODE) {
+    Serial.println("Setup complete. BLE advertising; phone handles internet upload.");
+    Serial.printf("[BTN_TEST] Serial Monitor 115200: SOS GPIO %d (active LOW; hold %lu ms), medicine GPIO %d (active LOW; tap). BOOT GPIO %d is also an SOS fallback.\n",
+                  SOS_BUTTON_PIN, (unsigned long)SOS_HOLD_MS,
+                  MEDICINE_BUTTON_PIN, BOOT_BUTTON_PIN);
+    Serial.println("[BTN_TEST] Each button must connect its GPIO to GND when pressed. Watch for startup HIGH/released and press LOW/PRESSED lines.");
+  }
 }
 
 void loop() {
   unsigned long now = millis();
   static uint8_t lastCmd = CMD_IDLE;
+
+  uint32_t phoneEpoch = 0;
+  if (bleTakeTimeSetRequest(&phoneEpoch) && rtcFound) {
+    rtc.adjust(DateTime(phoneEpoch));
+    if (DEBUG_MODE) Serial.println("[RTC] Clock synchronized from phone over BLE.");
+  }
+
+  char scheduleText[96];
+  if (bleTakeReminderSchedule(scheduleText, sizeof(scheduleText))) {
+    uint16_t parsed[12];
+    uint8_t parsedCount = 0;
+    char* savePtr = nullptr;
+    for (char* item = strtok_r(scheduleText, ",", &savePtr);
+         item && parsedCount < 12;
+         item = strtok_r(nullptr, ",", &savePtr)) {
+      int hour = -1, minute = -1;
+      if (sscanf(item, "%d:%d", &hour, &minute) == 2 &&
+          hour >= 0 && hour < 24 && minute >= 0 && minute < 60) {
+        parsed[parsedCount++] = (uint16_t)(hour * 60 + minute);
+      }
+    }
+    reminderCount = parsedCount;
+    for (uint8_t i = 0; i < reminderCount; i++) reminderMinutes[i] = parsed[i];
+    if (DEBUG_MODE) Serial.printf("[RTC] Synced %u medication reminder time(s) from phone.\n", reminderCount);
+  }
+
+  const int8_t reminderCommand = bleTakeReminderCommand();
+  if (reminderCommand == 1) {
+    portENTER_CRITICAL(&stateMux);
+    reminderLedActive = true;
+    strncpy(reminderSlotName, "app", sizeof(reminderSlotName) - 1);
+    portEXIT_CRITICAL(&stateMux);
+    digitalWrite(INDICATOR_LED_PIN, HIGH);
+  } else if (reminderCommand == 0) {
+    clearMedicineReminder();
+  }
 
   // Respect BLE command pinning with priority over cloud polling commands
   uint8_t pinnedCmd = CMD_IDLE;
@@ -1251,6 +817,26 @@ void loop() {
 
   // Active sensor reads (Core 1)
   uint8_t cmd = currentCmd;
+
+  // Non-blocking three-pulse indicator test requested from the phone over BLE.
+  static bool ledTestActive = false;
+  static uint8_t ledTestTransitions = 0;
+  static unsigned long nextLedTestAt = 0;
+  if (bleTakeLedTestRequest() && !ledTestActive) {
+    ledTestActive = true;
+    ledTestTransitions = 0;
+    nextLedTestAt = now;
+    if (DEBUG_MODE) Serial.printf("[LED] Phone test requested on GPIO %d\n", INDICATOR_LED_PIN);
+  }
+  if (ledTestActive && (long)(now - nextLedTestAt) >= 0) {
+    digitalWrite(INDICATOR_LED_PIN, (ledTestTransitions % 2 == 0) ? HIGH : LOW);
+    ledTestTransitions++;
+    nextLedTestAt = now + 150;
+    if (ledTestTransitions >= 6) {
+      ledTestActive = false;
+      digitalWrite(INDICATOR_LED_PIN, reminderLedActive ? HIGH : LOW);
+    }
+  }
 
   // Clear stale pulse data whenever a new pulse scan starts
   if (cmd != lastCmd) {
@@ -1276,18 +862,13 @@ void loop() {
     }
   }
 
-  // Sample AD8232 ECG when commanded or whenever BLE is connected for live 10Hz ECG streaming
-  if (cmd == CMD_READ_AD8232 || bleIsConnected()) {
-    processAD8232();
-  }
-
   // ── 10 Hz Low-Latency BLE Vitals Notification (every 100 ms) ───────────────
   static unsigned long lastBleNotify = 0;
   if (bleIsConnected() && (now - lastBleNotify >= BLE_NOTIFY_INTERVAL_MS)) {
     lastBleNotify = now;
 
-    int hrSnap, spo2Snap, ecgBpmSnap, rawEcgSnap;
-    bool hrValidSnap, spo2ValidSnap, fingerSnap, leadsOffSnap, tempValidSnap;
+    int hrSnap, spo2Snap;
+    bool hrValidSnap, spo2ValidSnap, fingerSnap, tempValidSnap;
     float tempSnap;
 
     portENTER_CRITICAL(&stateMux);
@@ -1306,9 +887,6 @@ void loop() {
       tempSnap      = 0.0f;
       tempValidSnap = false;
     }
-    ecgBpmSnap   = ecgBPM;
-    leadsOffSnap = ecgLeadsOff;
-    rawEcgSnap   = ecgValue;
     portEXIT_CRITICAL(&stateMux);
 
     bleNotifyVitals(
@@ -1318,10 +896,7 @@ void loop() {
       spo2ValidSnap,
       fingerSnap,
       tempSnap,
-      tempValidSnap,
-      ecgBpmSnap,
-      leadsOffSnap,
-      rawEcgSnap
+      tempValidSnap
     );
   }
 
@@ -1332,46 +907,67 @@ void loop() {
     updateOLED();
   }
 
-  // ── Hardware SOS Button (GPIO 27 or onboard BOOT pin 0, active LOW to GND) ───
-  static unsigned long lastSosPress = 0;
-  bool sosTriggered = (digitalRead(SOS_BUTTON_PIN) == LOW) || (digitalRead(0) == LOW);
-  if (sosTriggered) {
-    delay(40); // Debounce
-    if ((digitalRead(SOS_BUTTON_PIN) == LOW) || (digitalRead(0) == LOW)) {
-      if (reminderLedActive) {
-        // IF A REMINDER MESSAGE IS ON THE SCREEN, PRESSING SOS BUTTON CLEARS IT!
-        if (DEBUG_MODE) Serial.println("[Button] Reminder active -> Dismissing reminder message on SOS button press!");
-        clearMedicineReminder();
-        while ((digitalRead(SOS_BUTTON_PIN) == LOW) || (digitalRead(0) == LOW)) { delay(10); } // wait for release
-      } else {
-        // IF NO REMINDER IS ACTIVE, TRIGGER EMERGENCY SOS
-        if (now - lastSosPress > SOS_COOLDOWN_MS) {
-          lastSosPress = now;
-          triggerHardwareSos();
-        }
-      }
+  // Debounced button self-test and controls.
+  pollButton(sosButtonInput, now);
+  pollButton(bootButtonInput, now);
+  const bool sosPressed = sosButtonInput.pressed || bootButtonInput.pressed;
+  static bool sosWasPressed = false;
+  static unsigned long sosPressedAt = 0;
+  static unsigned long lastSosTriggeredAt = 0;
+  static bool sosTriggeredForPress = false;
+
+  if (sosPressed && !sosWasPressed) {
+    sosPressedAt = now;
+    sosTriggeredForPress = false;
+    if (BUTTON_DIAGNOSTICS) {
+      Serial.printf("[BTN_TEST] Hold SOS for %lu ms to trigger.\n",
+                    (unsigned long)SOS_HOLD_MS);
     }
+  } else if (!sosPressed && sosWasPressed) {
+    if (!sosTriggeredForPress && BUTTON_DIAGNOSTICS) {
+      Serial.printf("[BTN_TEST] SOS released after %lu ms; no alert sent.\n",
+                    (unsigned long)(now - sosPressedAt));
+    }
+    sosPressedAt = 0;
+    sosTriggeredForPress = false;
   }
 
-  // ── Medicine Reminder Button (GPIO 21, active LOW to GND) ─────────────────
-  static unsigned long lastMedBtn = 0;
-  if (digitalRead(MEDICINE_BUTTON_PIN) == LOW) {
-    delay(30); // Debounce
-    if (digitalRead(MEDICINE_BUTTON_PIN) == LOW) {
-      if (now - lastMedBtn > 800) {
-        lastMedBtn = now;
-        if (reminderLedActive) {
-          clearMedicineReminder();
-        } else {
-          // Still emit med_ack over BLE on manual button press + LED feedback blink
-          bleNotifyEvent("med_ack");
-          if (DEBUG_MODE) Serial.println("[Reminder] LED test blink (GPIO 22) + BLE med_ack...");
-          digitalWrite(INDICATOR_LED_PIN, HIGH);
-          delay(500);
-          digitalWrite(INDICATOR_LED_PIN, LOW);
-        }
-        while (digitalRead(MEDICINE_BUTTON_PIN) == LOW) { delay(10); }
+  if (sosPressed && !sosTriggeredForPress &&
+      now - sosPressedAt >= SOS_HOLD_MS) {
+    sosTriggeredForPress = true;
+    if (lastSosTriggeredAt == 0 ||
+        now - lastSosTriggeredAt >= SOS_COOLDOWN_MS) {
+      lastSosTriggeredAt = now;
+      if (BUTTON_DIAGNOSTICS) Serial.println("[BTN_TEST] SOS hold accepted.");
+      triggerHardwareSos();
+    } else if (BUTTON_DIAGNOSTICS) {
+      Serial.println("[BTN_TEST] SOS ignored: cooldown is still active.");
+    }
+  }
+  sosWasPressed = sosPressed;
+
+  if (pollButton(medicineButtonInput, now) && medicineButtonInput.pressed) {
+    if (reminderLedActive) {
+      if (BUTTON_DIAGNOSTICS) Serial.println("[BTN_TEST] Medicine button acknowledged an active reminder.");
+      clearMedicineReminder();
+    } else {
+      bleNotifyEvent("med_ack");
+      if (BUTTON_DIAGNOSTICS) Serial.println("[BTN_TEST] Medicine button press accepted; sending med_ack and LED test.");
+      display.clearDisplay();
+      display.setTextColor(SSD1306_WHITE);
+      display.setTextSize(1);
+      display.setCursor(8, 16);
+      display.println("MEDICINE BUTTON");
+      display.setCursor(8, 36);
+      display.println("BUTTON TEST OK");
+      display.display();
+      for (uint8_t pulse = 0; pulse < 3; pulse++) {
+        digitalWrite(INDICATOR_LED_PIN, HIGH);
+        delay(100);
+        digitalWrite(INDICATOR_LED_PIN, LOW);
+        delay(100);
       }
+      updateOLED();
     }
   }
 
@@ -1383,17 +979,19 @@ void loop() {
     DateTime rtcNow = rtc.now();
     if (rtcNow.minute() != lastCheckedMinute) {
       lastCheckedMinute = rtcNow.minute();
-      // Check if top of the hour matches standard medicine reminder times
-      if (rtcNow.minute() == 0 && (rtcNow.hour() == 8 || rtcNow.hour() == 13 || rtcNow.hour() == 20)) {
+      const uint16_t currentMinute = (uint16_t)(rtcNow.hour() * 60 + rtcNow.minute());
+      bool due = false;
+      for (uint8_t i = 0; i < reminderCount; i++) {
+        if (reminderMinutes[i] == currentMinute) due = true;
+      }
+      if (due) {
         if (millis() >= reminderSuppressedUntil) {
           portENTER_CRITICAL(&stateMux);
           reminderLedActive = true;
-          if (rtcNow.hour() == 8) strncpy(reminderSlotName, "morning", sizeof(reminderSlotName) - 1);
-          else if (rtcNow.hour() == 13) strncpy(reminderSlotName, "afternoon", sizeof(reminderSlotName) - 1);
-          else strncpy(reminderSlotName, "night", sizeof(reminderSlotName) - 1);
+          strncpy(reminderSlotName, "scheduled", sizeof(reminderSlotName) - 1);
           portEXIT_CRITICAL(&stateMux);
           digitalWrite(INDICATOR_LED_PIN, HIGH);
-          if (DEBUG_MODE) Serial.printf("[RTC Reminder] Scheduled medicine due at %02d:00!\n", rtcNow.hour());
+          if (DEBUG_MODE) Serial.printf("[RTC Reminder] Medication due at %02d:%02d.\n", rtcNow.hour(), rtcNow.minute());
         }
       }
     }

@@ -2,8 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../../core/theme.dart';
+import '../../data/api_client.dart';
+import '../../data/live_service.dart';
+import '../../data/medication_reminder_service.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
 
@@ -16,32 +20,141 @@ class WalkingStickScreen extends ConsumerStatefulWidget {
 
 class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   Timer? _pollTimer;
+  StreamSubscription<LiveEvent>? _stickEvents;
   bool _loading = true;
   bool _busyAction = false;
+  bool _pairingStick = false;
+  bool _stickPaired = true;
   String? _error;
 
   Map<String, dynamic> _status = const {};
   bool _geofenceDirty = false;
-  bool _geofenceEnabled = true;
+  bool _geofenceEnabled = false;
   double _radiusM = 250.0;
-  double _centerLat = 12.9716;
-  double _centerLng = 77.5946;
+  double? _centerLat;
+  double? _centerLng;
   String _geofenceLabel = 'Home Safety Zone';
 
   @override
   void initState() {
     super.initState();
     unawaited(_fetchStatus());
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _stickEvents = ref.read(liveProvider).events.listen((event) {
+      if (!mounted || event is! StickChanged) return;
+      _onStickSnapshot(event.snapshot);
+    });
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       if (mounted && !_busyAction) {
         unawaited(_fetchStatus(silent: true));
       }
     });
   }
 
+  String? _directionPrompt(Map<String, dynamic> snapshot) {
+    if (snapshot['online'] != true) return null;
+    final data =
+        (snapshot['data'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final serverPrompt = data['voice_prompt'];
+    if (serverPrompt is String && serverPrompt.trim().isNotEmpty) {
+      return serverPrompt.trim();
+    }
+    double? cm(String key) {
+      final value = data[key];
+      if (value is! num) return null;
+      final distance = value.toDouble();
+      if (distance < -1) return null;
+      return distance == -1 ? 401 : distance;
+    }
+
+    bool contact(String key) => data[key] == true;
+    bool blocked(String key, String contactKey) =>
+        contact(contactKey) || (cm(key) != null && cm(key)! <= 80);
+    bool clear(String key, String contactKey) =>
+        cm(key) != null && cm(key)! > 80 && !contact(contactKey);
+
+    final leftBlocked = blocked('left_cm', 'left_contact');
+    final frontBlocked = blocked('front_cm', 'front_contact');
+    final rightBlocked = blocked('right_cm', 'right_contact');
+    final leftClear = clear('left_cm', 'left_contact');
+    final rightClear = clear('right_cm', 'right_contact');
+
+    if (frontBlocked) {
+      if (leftClear && rightClear) {
+        final leftDistance = cm('left_cm')!;
+        final rightDistance = cm('right_cm')!;
+        return leftDistance >= rightDistance
+            ? 'Obstacle ahead. Go left.'
+            : 'Obstacle ahead. Go right.';
+      }
+      if (leftClear) return 'Obstacle ahead. Go left.';
+      if (rightClear) return 'Obstacle ahead. Go right.';
+      return 'Stop. The path ahead is blocked.';
+    }
+    if (rightBlocked && !leftBlocked) {
+      return leftClear
+          ? 'Obstacle on your right. Go left.'
+          : 'Stop. Obstacle on your right.';
+    }
+    if (leftBlocked && !rightBlocked) {
+      return rightClear
+          ? 'Obstacle on your left. Go right.'
+          : 'Stop. Obstacle on your left.';
+    }
+    if (leftBlocked && rightBlocked) return 'Stop. Obstacles on both sides.';
+    return null;
+  }
+
+  String _turnLightFor(Map<String, dynamic> data) {
+    final direction = (data['recommended_direction'] ?? '').toString();
+    if (direction == 'left' || direction == 'right') return direction;
+    if (direction == 'stop') return 'hazard';
+    final guidance = (data['voice_prompt'] ?? data['guidance'] ?? '')
+        .toString()
+        .toLowerCase();
+    if (guidance.contains('go left')) return 'left';
+    if (guidance.contains('go right')) return 'right';
+    if (guidance.contains('stop')) return 'hazard';
+    return 'off';
+  }
+
+  String? _pendingGuidance;
+  int _matchingGuidanceFrames = 0;
+  String? _lastAnnouncedGuidance;
+
+  void _onStickSnapshot(Map<String, dynamic> snapshot) {
+    setState(() {
+      _status = snapshot;
+      _loading = false;
+      _error = null;
+      _stickPaired = true;
+    });
+    _announceGuidance(snapshot);
+  }
+
+  void _announceGuidance(Map<String, dynamic> snapshot) {
+    final prompt = _directionPrompt(snapshot);
+    if (prompt == null) {
+      _pendingGuidance = null;
+      _matchingGuidanceFrames = 0;
+      _lastAnnouncedGuidance = null;
+      return;
+    }
+    if (_pendingGuidance == prompt) {
+      _matchingGuidanceFrames++;
+    } else {
+      _pendingGuidance = prompt;
+      _matchingGuidanceFrames = 1;
+    }
+    if (_matchingGuidanceFrames >= 2 && _lastAnnouncedGuidance != prompt) {
+      _lastAnnouncedGuidance = prompt;
+      unawaited(MedicationReminderService.speakPrompt(prompt));
+    }
+  }
+
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _stickEvents?.cancel();
     super.dispose();
   }
 
@@ -55,33 +168,50 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
     try {
       final res = await ref.read(apiProvider).stickStatus();
       if (!mounted) return;
-      final geo = (res['geofence'] as Map?)?.cast<String, dynamic>() ?? const {};
+      final geo =
+          (res['geofence'] as Map?)?.cast<String, dynamic>() ?? const {};
       setState(() {
         _status = res;
         _loading = false;
         _error = null;
+        _stickPaired = true;
         if (!_geofenceDirty && geo.isNotEmpty) {
           _geofenceEnabled = geo['enabled'] == true;
-          _radiusM = ((geo['radius_m'] as num?)?.toDouble() ?? 250.0).clamp(50.0, 1000.0);
-          _centerLat = (geo['center_lat'] as num?)?.toDouble() ?? 12.9716;
-          _centerLng = (geo['center_lng'] as num?)?.toDouble() ?? 77.5946;
+          _radiusM = ((geo['radius_m'] as num?)?.toDouble() ?? 250.0)
+              .clamp(50.0, 1000.0);
+          _centerLat = (geo['center_lat'] as num?)?.toDouble();
+          _centerLng = (geo['center_lng'] as num?)?.toDouble();
           _geofenceLabel = (geo['label'] as String?)?.trim().isNotEmpty == true
               ? geo['label'] as String
               : 'Home Safety Zone';
         }
       });
+      _announceGuidance(res);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
+        if (e is ApiException &&
+            e.status == 404 &&
+            e.message.contains('not paired')) {
+          _stickPaired = false;
+          _error =
+              'Pair the walking stick to this account to view its live data.';
+        }
         if (!silent || _status.isEmpty) {
-          _error = e.toString();
+          _error ??= e.toString();
         }
       });
     }
   }
 
   Future<void> _saveGeofence() async {
+    if (_geofenceEnabled && (_centerLat == null || _centerLng == null)) {
+      showSnack(
+          context, 'Set a safe-zone center from phone GPS or VitaWatch first.',
+          error: true);
+      return;
+    }
     setState(() => _busyAction = true);
     try {
       await ref.read(apiProvider).updateStickGeofence(
@@ -100,7 +230,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
         );
       }
     } catch (e) {
-      if (mounted) showSnack(context, 'Failed to save geofence: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Failed to save geofence: $e', error: true);
     } finally {
       if (mounted) setState(() => _busyAction = false);
     }
@@ -115,8 +246,11 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
         final lat = (loc['lat'] as num?)?.toDouble();
         final lng = (loc['lng'] as num?)?.toDouble();
         if (lat != null && lng != null) {
-          _centerLat = lat;
-          _centerLng = lng;
+          setState(() {
+            _centerLat = lat;
+            _centerLng = lng;
+            _geofenceDirty = true;
+          });
         }
       }
       await _fetchStatus(silent: true);
@@ -126,13 +260,67 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
         showSnack(context, msg);
       }
     } catch (e) {
-      if (mounted) showSnack(context, 'Sync with VitaWatch failed: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Sync with VitaWatch failed: $e', error: true);
     } finally {
       if (mounted) setState(() => _busyAction = false);
     }
   }
 
-  Future<void> _runSimulation(String label, Map<String, dynamic> payload) async {
+  Future<void> _usePhoneLocation() async {
+    setState(() => _busyAction = true);
+    try {
+      if (!await Geolocator.isLocationServiceEnabled()) {
+        throw StateError('Turn on location services and try again.');
+      }
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        throw StateError('Allow location access to set the safe-zone center.');
+      }
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _centerLat = position.latitude;
+        _centerLng = position.longitude;
+        _geofenceDirty = true;
+      });
+      showSnack(context,
+          'Phone GPS set as the safe-zone center. Save the geofence to apply it.');
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not get phone location: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _busyAction = false);
+    }
+  }
+
+  Future<void> _pairStick() async {
+    setState(() => _pairingStick = true);
+    try {
+      await ref.read(apiProvider).pair('esp32_walking_stick_01');
+      if (!mounted) return;
+      setState(() => _stickPaired = true);
+      await _fetchStatus();
+      if (mounted) showSnack(context, 'Walking stick paired to this account.');
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not pair walking stick: $e', error: true);
+    } finally {
+      if (mounted) setState(() => _pairingStick = false);
+    }
+  }
+
+  Future<void> _runSimulation(
+      String label, Map<String, dynamic> payload) async {
     setState(() => _busyAction = true);
     try {
       await ref.read(apiProvider).simulateStick(payload);
@@ -148,6 +336,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   }
 
   Color _zoneColor(double cm, bool contact) {
+    if (cm <= -2 && !contact) return Palette.textDim;
+    if (cm == -1 && !contact) return Palette.green;
     if (contact || (cm >= 0 && cm <= 15)) return Palette.red;
     if (cm > 15 && cm <= 50) return Palette.amber;
     if (cm > 50) return Palette.teal;
@@ -155,7 +345,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   }
 
   String _formatCm(double cm) {
-    if (cm < 0) return '>200 cm';
+    if (cm <= -2) return 'NO DATA';
+    if (cm == -1) return '>200 cm';
     if (cm < 10) return '${cm.toStringAsFixed(1)} cm';
     return '${cm.round()} cm';
   }
@@ -166,6 +357,9 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
         return Palette.red;
       case 'warning':
         return Palette.amber;
+      case 'disabled':
+      case 'unconfigured':
+        return Palette.textDim;
       default:
         return Palette.green;
     }
@@ -196,27 +390,37 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
   @override
   Widget build(BuildContext context) {
     final online = _status['online'] == true;
-    final deviceId = (_status['device_id'] as String?) ?? 'esp32_walking_stick_01';
+    final deviceId =
+        (_status['device_id'] as String?) ?? 'esp32_walking_stick_01';
     final data = (_status['data'] as Map?)?.cast<String, dynamic>() ?? const {};
 
-    final leftCm = (data['left_cm'] as num?)?.toDouble() ?? -1.0;
-    final frontCm = (data['front_cm'] as num?)?.toDouble() ?? -1.0;
-    final rightCm = (data['right_cm'] as num?)?.toDouble() ?? -1.0;
+    final leftCm = (data['left_cm'] as num?)?.toDouble() ?? -2.0;
+    final frontCm = (data['front_cm'] as num?)?.toDouble() ?? -2.0;
+    final rightCm = (data['right_cm'] as num?)?.toDouble() ?? -2.0;
 
     final leftContact = data['left_contact'] == true;
     final frontContact = data['front_contact'] == true;
     final rightContact = data['right_contact'] == true;
     final anyContact = leftContact || frontContact || rightContact;
 
-    final guidance = (data['guidance'] as String?) ?? 'clear';
-    final ldrRaw = (data['ldr_raw'] as num?)?.toInt() ?? 500;
+    final guidance = (data['guidance'] as String?) ?? 'unknown';
+    final turnLight = (data['turn_light'] as String?) ?? _turnLightFor(data);
+    final ldrRaw = (data['ldr_raw'] as num?)?.toInt();
     final lightOn = data['light_on'] == true;
-    final rssi = (data['rssi'] as num?)?.toInt() ?? -60;
-    final lat = (data['lat'] as num?)?.toDouble() ?? 12.9716;
-    final lng = (data['lng'] as num?)?.toDouble() ?? 77.5946;
-    final address = (data['address'] as String?) ?? 'MG Road, Bangalore, Karnataka';
-    final trackingMode = (data['tracking_mode'] as String?) ?? 'simulated';
-    final geofenceStatus = (data['geofence_status'] as String?) ?? 'safe';
+    final rssi = (data['rssi'] as num?)?.toInt();
+    final lat = (data['lat'] as num?)?.toDouble();
+    final lng = (data['lng'] as num?)?.toDouble();
+    final hasLocation = lat != null && lng != null;
+    final trackingMode = (data['tracking_mode'] as String?) ?? 'unavailable';
+    final address = (data['address'] as String?) ??
+        (trackingMode == 'simulated'
+            ? 'Simulated location'
+            : 'GPS fix unavailable');
+    final simulated = trackingMode == 'simulated';
+    final geofenceStatus = (data['geofence_status'] as String?) ?? 'disabled';
+    final demoLat = _centerLat ?? 12.9716;
+    final demoLng = _centerLng ?? 77.5946;
+    final ldrProgress = ((ldrRaw ?? 0) / 1023.0).clamp(0.0, 1.0);
 
     final rawEvents = (_status['latest_events'] as List?) ?? const [];
     final events = rawEvents
@@ -278,7 +482,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         ),
                         Text(
                           '3-Zone Ultrasonic Radar • Auto-Headlight • Geofence',
-                          style: TextStyle(color: Palette.textDim, fontSize: 12.5),
+                          style:
+                              TextStyle(color: Palette.textDim, fontSize: 12.5),
                         ),
                       ],
                     ),
@@ -286,7 +491,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                   IconButton(
                     tooltip: 'Refresh Telemetry',
                     onPressed: _busyAction ? null : () => _fetchStatus(),
-                    icon: const Icon(Icons.refresh_rounded, color: Palette.text),
+                    icon:
+                        const Icon(Icons.refresh_rounded, color: Palette.text),
                   ),
                 ],
               ),
@@ -295,7 +501,9 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
             // Top Telemetry Link Banner
             GlassCard(
               padding: const EdgeInsets.all(16),
-              borderColor: online ? Palette.teal.withValues(alpha: 0.55) : Palette.outline,
+              borderColor: online && !simulated
+                  ? Palette.teal.withValues(alpha: 0.55)
+                  : Palette.outline,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -305,12 +513,17 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         width: 44,
                         height: 44,
                         decoration: BoxDecoration(
-                          color: (online ? Palette.teal : Palette.blue).withValues(alpha: 0.14),
+                          color: (online && !simulated
+                                  ? Palette.teal
+                                  : Palette.blue)
+                              .withValues(alpha: 0.14),
                           borderRadius: BorderRadius.circular(13),
                         ),
                         child: Icon(
                           Icons.elderly_rounded,
-                          color: online ? Palette.teal : Palette.blue,
+                          color: online && !simulated
+                              ? Palette.teal
+                              : Palette.blue,
                           size: 24,
                         ),
                       ),
@@ -336,7 +549,7 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              'Mode: ${trackingMode.toUpperCase()} • RSSI $rssi dBm • Auto-poll 3s',
+                              'Mode: ${trackingMode.toUpperCase()} • RSSI ${rssi == null ? '--' : '$rssi dBm'} • Live updates',
                               style: const TextStyle(
                                 color: Palette.textDim,
                                 fontSize: 12,
@@ -347,18 +560,37 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
-                          color: (online ? Palette.green : Palette.amber).withValues(alpha: 0.14),
+                          color: (simulated
+                                  ? Palette.blue
+                                  : online
+                                      ? Palette.green
+                                      : Palette.amber)
+                              .withValues(alpha: 0.14),
                           borderRadius: BorderRadius.circular(999),
                           border: Border.all(
-                            color: (online ? Palette.green : Palette.amber).withValues(alpha: 0.4),
+                            color: (simulated
+                                    ? Palette.blue
+                                    : online
+                                        ? Palette.green
+                                        : Palette.amber)
+                                .withValues(alpha: 0.4),
                           ),
                         ),
                         child: Text(
-                          online ? 'ONLINE' : 'STANDBY / SIM',
+                          simulated
+                              ? 'SIMULATED'
+                              : online
+                                  ? 'ONLINE'
+                                  : 'OFFLINE',
                           style: TextStyle(
-                            color: online ? Palette.green : Palette.amber,
+                            color: simulated
+                                ? Palette.blue
+                                : online
+                                    ? Palette.green
+                                    : Palette.amber,
                             fontSize: 11,
                             fontWeight: FontWeight.w800,
                             letterSpacing: 0.6,
@@ -369,18 +601,22 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                   ),
                   const SizedBox(height: 12),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                     decoration: BoxDecoration(
                       color: Palette.surfaceHi,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.location_on_rounded, size: 16, color: Palette.teal),
+                        const Icon(Icons.location_on_rounded,
+                            size: 16, color: Palette.teal),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            '$address (${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)})',
+                            hasLocation
+                                ? '$address (${lat?.toStringAsFixed(5)}, ${lng?.toStringAsFixed(5)})'
+                                : 'GPS fix unavailable • No location received',
                             style: const TextStyle(
                               color: Palette.text,
                               fontSize: 12,
@@ -403,14 +639,23 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                 borderColor: Palette.red.withValues(alpha: 0.45),
                 child: Row(
                   children: [
-                    const Icon(Icons.error_outline_rounded, color: Palette.red, size: 20),
+                    const Icon(Icons.error_outline_rounded,
+                        color: Palette.red, size: 20),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         _error!,
-                        style: const TextStyle(color: Palette.text, fontSize: 13),
+                        style:
+                            const TextStyle(color: Palette.text, fontSize: 13),
                       ),
                     ),
+                    if (!_stickPaired) ...[
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: _pairingStick ? null : _pairStick,
+                        child: Text(_pairingStick ? 'Pairing…' : 'Pair stick'),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -422,9 +667,11 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
             SectionHeader(
               '3-Zone Ultrasonic Obstacle Radar',
               action: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: (anyContact ? Palette.red : Palette.teal).withValues(alpha: 0.14),
+                  color: (anyContact ? Palette.red : Palette.teal)
+                      .withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
@@ -448,7 +695,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                 children: [
                   // Voice / Haptic Guidance Banner
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 12),
                     decoration: BoxDecoration(
                       color: (anyContact
                               ? Palette.red
@@ -508,6 +756,42 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                       ],
                     ),
                   ),
+                  if (turnLight != 'off') ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 9),
+                      decoration: BoxDecoration(
+                        color: Palette.amber.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: Palette.amber.withValues(alpha: 0.4)),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            turnLight == 'left'
+                                ? Icons.turn_left_rounded
+                                : turnLight == 'right'
+                                    ? Icons.turn_right_rounded
+                                    : Icons.warning_amber_rounded,
+                            color: Palette.amber,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            turnLight == 'hazard'
+                                ? 'TURN LIGHTS: BOTH • STOP'
+                                : 'TURN LIGHT: ${turnLight.toUpperCase()}',
+                            style: const TextStyle(
+                              color: Palette.text,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 16),
 
                   // 3 Ultrasonic Zone Tiles (Left / Front / Right)
@@ -558,7 +842,9 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
             const SectionHeader('Ambient Light (LDR) & Auto-Headlight'),
             GlassCard(
               padding: const EdgeInsets.all(18),
-              borderColor: lightOn ? Palette.amber.withValues(alpha: 0.6) : Palette.outline,
+              borderColor: lightOn
+                  ? Palette.amber.withValues(alpha: 0.6)
+                  : Palette.outline,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -568,11 +854,14 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         width: 46,
                         height: 46,
                         decoration: BoxDecoration(
-                          color: (lightOn ? Palette.amber : Palette.blue).withValues(alpha: 0.16),
+                          color: (lightOn ? Palette.amber : Palette.blue)
+                              .withValues(alpha: 0.16),
                           borderRadius: BorderRadius.circular(14),
                         ),
                         child: Icon(
-                          lightOn ? Icons.highlight_rounded : Icons.wb_sunny_rounded,
+                          lightOn
+                              ? Icons.highlight_rounded
+                              : Icons.wb_sunny_rounded,
                           color: lightOn ? Palette.amber : Palette.blue,
                           size: 26,
                         ),
@@ -583,7 +872,11 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              lightOn ? 'Night Headlight ACTIVE' : 'Daylight Standby Mode',
+                              lightOn
+                                  ? 'Night Headlight ACTIVE'
+                                  : ldrRaw == null
+                                      ? 'Light state unavailable'
+                                      : 'Daylight Standby Mode',
                               style: const TextStyle(
                                 color: Palette.text,
                                 fontSize: 16,
@@ -592,7 +885,7 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                             ),
                             const SizedBox(height: 3),
                             Text(
-                              'LDR Sensor Raw: $ldrRaw / 1023',
+                              'LDR Sensor Raw: ${ldrRaw ?? '--'} / 1023',
                               style: const TextStyle(
                                 color: Palette.textDim,
                                 fontSize: 13,
@@ -603,7 +896,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
                           color: (lightOn ? Palette.amber : Palette.surfaceHi)
                               .withValues(alpha: lightOn ? 0.20 : 1.0),
@@ -616,15 +910,25 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              lightOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+                              lightOn
+                                  ? Icons.flash_on_rounded
+                                  : Icons.flash_off_rounded,
                               size: 14,
                               color: lightOn ? Palette.amber : Palette.textDim,
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              lightOn ? 'LIGHT ON' : 'LIGHT OFF',
+                              ldrRaw == null
+                                  ? 'NO DATA'
+                                  : lightOn
+                                      ? 'LIGHT ON'
+                                      : 'LIGHT OFF',
                               style: TextStyle(
-                                color: lightOn ? Palette.amber : Palette.textDim,
+                                color: ldrRaw == null
+                                    ? Palette.textDim
+                                    : lightOn
+                                        ? Palette.amber
+                                        : Palette.textDim,
                                 fontSize: 11,
                                 fontWeight: FontWeight.w800,
                                 letterSpacing: 0.6,
@@ -639,7 +943,7 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                   ClipRRect(
                     borderRadius: BorderRadius.circular(8),
                     child: LinearProgressIndicator(
-                      value: (ldrRaw / 1023.0).clamp(0.0, 1.0),
+                      value: ldrRaw == null ? 0 : ldrProgress,
                       minHeight: 8,
                       backgroundColor: Palette.surfaceHi,
                       valueColor: AlwaysStoppedAnimation<Color>(
@@ -656,7 +960,9 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         style: TextStyle(color: Palette.textDim, fontSize: 11),
                       ),
                       Text(
-                        '${((ldrRaw / 1023.0) * 100).clamp(0, 100).round()}% Lum',
+                        ldrRaw == null
+                            ? 'NO DATA'
+                            : '${(ldrProgress * 100).round()}% Lum',
                         style: const TextStyle(
                           color: Palette.textDim,
                           fontSize: 11,
@@ -675,7 +981,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
             SectionHeader(
               'Safe-Zone Geofence Perimeter',
               action: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
                   color: geoColor.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(999),
@@ -687,7 +994,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                     Container(
                       width: 7,
                       height: 7,
-                      decoration: BoxDecoration(color: geoColor, shape: BoxShape.circle),
+                      decoration: BoxDecoration(
+                          color: geoColor, shape: BoxShape.circle),
                     ),
                     const SizedBox(width: 6),
                     Text(
@@ -722,7 +1030,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                           color: geoColor.withValues(alpha: 0.14),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Icon(Icons.radar_rounded, color: geoColor, size: 24),
+                        child: Icon(Icons.radar_rounded,
+                            color: geoColor, size: 24),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -739,7 +1048,9 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              'Center: ${_centerLat.toStringAsFixed(4)}, ${_centerLng.toStringAsFixed(4)}',
+                              _centerLat == null || _centerLng == null
+                                  ? 'Center not set • use phone GPS or sync VitaWatch'
+                                  : 'Center: ${_centerLat!.toStringAsFixed(5)}, ${_centerLng!.toStringAsFixed(5)}',
                               style: const TextStyle(
                                 color: Palette.textDim,
                                 fontSize: 12,
@@ -753,6 +1064,12 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         value: _geofenceEnabled,
                         activeColor: Palette.teal,
                         onChanged: (v) {
+                          if (v && (_centerLat == null || _centerLng == null)) {
+                            showSnack(context,
+                                'Set a safe-zone center from phone GPS or VitaWatch first.',
+                                error: true);
+                            return;
+                          }
                           setState(() {
                             _geofenceEnabled = v;
                             _geofenceDirty = true;
@@ -808,13 +1125,32 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Palette.teal,
+                        side: BorderSide(
+                            color: Palette.teal.withValues(alpha: 0.45)),
+                        minimumSize: const Size(0, 46),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                      ),
+                      onPressed: _busyAction ? null : _usePhoneLocation,
+                      icon: const Icon(Icons.my_location_rounded, size: 18),
+                      label: const Text('Use phone GPS for safe-zone center'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   Row(
                     children: [
                       Expanded(
                         child: OutlinedButton.icon(
                           style: OutlinedButton.styleFrom(
                             foregroundColor: Palette.blue,
-                            side: BorderSide(color: Palette.blue.withValues(alpha: 0.45)),
+                            side: BorderSide(
+                                color: Palette.blue.withValues(alpha: 0.45)),
                             minimumSize: const Size(0, 46),
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(14),
@@ -848,14 +1184,14 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
             const SizedBox(height: 20),
 
             // 4. Hardware Simulator Bar
-            const SectionHeader('Hardware Telemetry Simulator (Instant Demo)'),
+            const SectionHeader('Demo Simulator • Not live hardware'),
             GlassCard(
               padding: const EdgeInsets.all(16),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Inject live ESP32 #2 ultrasonic & geofence states into the cloud hub:',
+                    'Creates clearly marked sample telemetry for checking the screen and spoken turn prompts. It does not control the stick.',
                     style: TextStyle(color: Palette.textDim, fontSize: 12),
                   ),
                   const SizedBox(height: 12),
@@ -873,13 +1209,13 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                           'front_cm': 185,
                           'right_cm': 150,
                           'ldr_raw': 640,
-                          'light_on': false,
                           'guidance': 'clear',
-                          'lat': _centerLat,
-                          'lng': _centerLng,
+                          'lat': _centerLat ?? demoLat,
+                          'lng': _centerLng ?? demoLng,
                           'code': 'clear_path',
                           'priority': 1,
-                          'message': 'All 3 ultrasonic zones clear — normal daylight walking.',
+                          'message':
+                              'All 3 ultrasonic zones clear — normal daylight walking.',
                         }),
                       ),
                       _SimButton(
@@ -892,13 +1228,56 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                           'front_cm': 25,
                           'right_cm': 95,
                           'ldr_raw': 510,
-                          'light_on': false,
-                          'guidance': 'Obstacle 25cm ahead — veer left or right',
-                          'lat': _centerLat,
-                          'lng': _centerLng,
+                          'guidance':
+                              'Obstacle 25cm ahead — veer left or right',
+                          'lat': _centerLat ?? demoLat,
+                          'lng': _centerLng ?? demoLng,
                           'code': 'front_obstacle',
                           'priority': 2,
-                          'message': 'Front ultrasonic cone detected obstacle at 25 cm.',
+                          'message':
+                              'Front ultrasonic cone detected obstacle at 25 cm.',
+                        }),
+                      ),
+                      _SimButton(
+                        label: 'Right Obstacle • Go Left',
+                        icon: Icons.turn_left_rounded,
+                        color: Palette.amber,
+                        disabled: _busyAction,
+                        onTap: () =>
+                            _runSimulation('Right obstacle — go left', {
+                          'left_cm': 130,
+                          'front_cm': 120,
+                          'right_cm': 25,
+                          'ldr_raw': 520,
+                          'ldr_threshold': 100,
+                          'guidance': 'Obstacle on right — go left',
+                          'lat': _centerLat ?? demoLat,
+                          'lng': _centerLng ?? demoLng,
+                          'code': 'right_obstacle',
+                          'priority': 2,
+                          'message':
+                              'Right zone obstacle at 25 cm. Voice guidance: go left.',
+                        }),
+                      ),
+                      _SimButton(
+                        label: 'Left Obstacle • Go Right',
+                        icon: Icons.turn_right_rounded,
+                        color: Palette.amber,
+                        disabled: _busyAction,
+                        onTap: () =>
+                            _runSimulation('Left obstacle — go right', {
+                          'left_cm': 25,
+                          'front_cm': 120,
+                          'right_cm': 130,
+                          'ldr_raw': 520,
+                          'ldr_threshold': 100,
+                          'guidance': 'Obstacle on left — go right',
+                          'lat': _centerLat ?? demoLat,
+                          'lng': _centerLng ?? demoLng,
+                          'code': 'left_obstacle',
+                          'priority': 2,
+                          'message':
+                              'Left zone obstacle at 25 cm. Voice guidance: go right.',
                         }),
                       ),
                       _SimButton(
@@ -913,10 +1292,10 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                             'front_cm': 80,
                             'right_cm': 125,
                             'ldr_raw': 38,
-                            'light_on': true,
-                            'guidance': 'Immediate left contact (3cm) — step right! Night LED ON',
-                            'lat': _centerLat,
-                            'lng': _centerLng,
+                            'guidance':
+                                'Immediate left contact (3cm) — step right! Night LED ON',
+                            'lat': _centerLat ?? demoLat,
+                            'lng': _centerLng ?? demoLng,
                             'code': 'left_contact_night',
                             'priority': 3,
                             'message':
@@ -929,15 +1308,16 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                         icon: Icons.wrong_location_rounded,
                         color: Palette.red,
                         disabled: _busyAction,
-                        onTap: () => _runSimulation('Simulate Geofence Breach', {
+                        onTap: () =>
+                            _runSimulation('Simulate Geofence Breach', {
                           'left_cm': 95,
                           'front_cm': 130,
                           'right_cm': 110,
                           'ldr_raw': 490,
-                          'light_on': false,
-                          'guidance': 'Safe-Zone perimeter breached — caregiver alerted',
-                          'lat': _centerLat + 0.015,
-                          'lng': _centerLng + 0.015,
+                          'guidance':
+                              'Safe-Zone perimeter breached — caregiver alerted',
+                          'lat': demoLat + 0.015,
+                          'lng': demoLng + 0.015,
                           'code': 'geofence_breach',
                           'priority': 3,
                           'message':
@@ -978,7 +1358,8 @@ class _WalkingStickScreenState extends ConsumerState<WalkingStickScreen> {
                 final priority = (ev['priority'] as num?)?.toInt() ?? 1;
                 final source = (ev['source'] as String?) ?? 'stick';
                 final code = (ev['code'] as String?) ?? 'event';
-                final msg = (ev['message'] as String?) ?? 'Stick telemetry event';
+                final msg =
+                    (ev['message'] as String?) ?? 'Stick telemetry event';
                 final color = priority >= 3
                     ? Palette.red
                     : priority == 2
@@ -1098,7 +1479,8 @@ class _RadarZoneTile extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
       decoration: BoxDecoration(
-        color: emphasized ? Palette.surfaceHi : Palette.bg.withValues(alpha: 0.55),
+        color:
+            emphasized ? Palette.surfaceHi : Palette.bg.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: contact ? Palette.red : color.withValues(alpha: 0.45),

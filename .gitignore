@@ -14,6 +14,7 @@ venv/
 # Flutter / Android build outputs
 mobile/.dart_tool/
 mobile/build/
+firmware/**/build/
 mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
 mobile/.packages
@@ -28,3 +29,4 @@ mobile/.idea/
 .DS_Store
 Thumbs.db
 # Jeevan sync: 2026-11-13
+firmware/walking_stick_esp32/config.h

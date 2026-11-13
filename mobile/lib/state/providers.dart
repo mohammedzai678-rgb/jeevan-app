@@ -15,6 +15,7 @@ import '../data/api_client.dart';
 import '../data/auth_service.dart';
 import '../data/ble_service.dart';
 import '../data/live_service.dart';
+import '../data/medication_reminder_service.dart';
 import '../data/models.dart';
 import '../data/secure_store.dart';
 import '../data/supabase_service.dart';
@@ -64,29 +65,40 @@ class DevicesState {
   const DevicesState(
       {this.devices = const {},
       this.selected,
+      this.bleWatch,
       this.hrSeries = const [],
       this.spo2Series = const [],
-      this.ecgSeries = const []});
+      this.ecgSeries = const [],
+      this.bleHrSeries = const [],
+      this.bleSpo2Series = const []});
   final Map<String, DeviceSnapshot> devices;
   final String? selected;
+  final DeviceSnapshot? bleWatch;
   final List<double> hrSeries,
       spo2Series,
       ecgSeries; // rolling buffers for the selected device
+  final List<double> bleHrSeries, bleSpo2Series;
 
   DeviceSnapshot? get current => selected == null ? null : devices[selected];
 
   DevicesState copyWith(
           {Map<String, DeviceSnapshot>? devices,
           String? selected,
+          DeviceSnapshot? bleWatch,
           List<double>? hrSeries,
           List<double>? spo2Series,
-          List<double>? ecgSeries}) =>
+          List<double>? ecgSeries,
+          List<double>? bleHrSeries,
+          List<double>? bleSpo2Series}) =>
       DevicesState(
         devices: devices ?? this.devices,
         selected: selected ?? this.selected,
+        bleWatch: bleWatch ?? this.bleWatch,
         hrSeries: hrSeries ?? this.hrSeries,
         spo2Series: spo2Series ?? this.spo2Series,
         ecgSeries: ecgSeries ?? this.ecgSeries,
+        bleHrSeries: bleHrSeries ?? this.bleHrSeries,
+        bleSpo2Series: bleSpo2Series ?? this.bleSpo2Series,
       );
 }
 
@@ -97,6 +109,13 @@ class DevicesController extends StateNotifier<DevicesState> {
     final ble = _ref.read(bleProvider);
     _subs.add(live.snapshots.listen(_onCloud));
     _subs.add(ble.samples.listen(_onBle));
+    _subs.add(ble.events.listen((event) {
+      if (event == 'medication_due') {
+        unawaited(
+            MedicationReminderService.showMedicationAlert('your scheduled dose')
+                .catchError((_) {}));
+      }
+    }));
     _subs.add(live.events.listen((e) {
       if (e is ReminderChanged) _patchReminder(e.reminder);
     }));
@@ -133,8 +152,8 @@ class DevicesController extends StateNotifier<DevicesState> {
     state = DevicesState(devices: m, selected: m.isEmpty ? null : m.keys.first);
   }
 
-  /// Sensor selection: 'auto' | 'read_max30102' | 'read_dht11' | 'read_ad8232' | 'idle'.
-  /// Sent over BLE (instant) when connected, and to the server (applies to WiFi path) always.
+  /// Sensor selection is sent directly over BLE. Paired legacy devices may also
+  /// receive a server command, but VitaWatch does not need watch-side Wi-Fi.
   Future<void> setCommand(String command) async {
     final id = state.selected;
     final ble = _ref.read(bleProvider);
@@ -164,6 +183,47 @@ class DevicesController extends StateNotifier<DevicesState> {
 
   void _onBle(BleSample s) {
     _lastBle = s.at;
+    final ble = _ref.read(bleProvider);
+    final watchId = (ble.connectedId ?? 'vitawatch')
+        .replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final watchVitals = Vitals(
+      heartRate: s.vitals.heartRate,
+      spo2: s.vitals.spo2,
+      temperature: s.vitals.temperature,
+      fingerDetected: s.vitals.fingerDetected,
+    );
+    final watch = DeviceSnapshot(
+      deviceId: watchId,
+      online: true,
+      vitals: watchVitals,
+      analysis: localTriage(watchVitals),
+      source: VitalsSource.ble,
+      receivedAt: s.at,
+    );
+    List<double> push(List<double> values, num? value) {
+      if (value == null) return values;
+      final next = [...values, value.toDouble()];
+      return next.length > historyPoints
+          ? next.sublist(next.length - historyPoints)
+          : next;
+    }
+
+    state = state.copyWith(
+      bleWatch: watch,
+      bleHrSeries: push(state.bleHrSeries, s.vitals.heartRate),
+      bleSpo2Series: push(state.bleSpo2Series, s.vitals.spo2),
+    );
+
+    // Phone gateway: forward the real BLE values over the signed-in account's
+    // live socket. The server claims this watch ID for that account on first use.
+    _ref.read(liveProvider).sendBle(watchId, {
+      if (s.vitals.heartRate != null) 'heart_rate': s.vitals.heartRate,
+      if (s.vitals.spo2 != null) 'spo2': s.vitals.spo2,
+      if (s.vitals.temperature != null) 'temperature': s.vitals.temperature,
+      if (s.vitals.fingerDetected != null)
+        'finger_detected': s.vitals.fingerDetected,
+    });
+
     final id = state.selected;
     if (id == null) return;
     final prev = state.devices[id] ?? DeviceSnapshot(deviceId: id);
@@ -171,11 +231,6 @@ class DevicesController extends StateNotifier<DevicesState> {
       heartRate: s.vitals.heartRate ?? prev.vitals.heartRate,
       spo2: s.vitals.spo2 ?? prev.vitals.spo2,
       temperature: s.vitals.temperature ?? prev.vitals.temperature,
-      ecgBpm: s.vitals.leadOff == true
-          ? null
-          : (s.vitals.ecgBpm ?? prev.vitals.ecgBpm),
-      ecgValue: s.vitals.ecgValue,
-      leadOff: s.vitals.leadOff,
       fingerDetected: s.vitals.fingerDetected,
     );
     final snap = prev.copyWith(
@@ -185,14 +240,6 @@ class DevicesController extends StateNotifier<DevicesState> {
         source: VitalsSource.ble);
     final devices = Map.of(state.devices)..[id] = snap;
     state = _withSeries(state.copyWith(devices: devices), snap);
-    // Gateway: forward to the cloud so history/caregivers stay in sync (fire-and-forget over the open socket).
-    _ref.read(liveProvider).sendBle(id, {
-      if (s.vitals.heartRate != null) 'heart_rate': s.vitals.heartRate,
-      if (s.vitals.spo2 != null) 'spo2': s.vitals.spo2,
-      if (s.vitals.temperature != null) 'temperature': s.vitals.temperature,
-      if (s.vitals.ecgBpm != null) 'ecg_bpm': s.vitals.ecgBpm,
-      if (s.vitals.leadOff != null) 'lead_off': s.vitals.leadOff,
-    });
   }
 
   DevicesState _withSeries(DevicesState st, DeviceSnapshot snap) {
@@ -525,6 +572,7 @@ class SosController extends StateNotifier<SosState> {
     _lastTapAt = null;
     unawaited(SystemSound.play(SystemSoundType.alert));
     unawaited(HapticFeedback.heavyImpact());
+    unawaited(MedicationReminderService.showSosAlert().catchError((_) {}));
 
     final contacts = currentContacts();
     final seed = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
@@ -576,17 +624,27 @@ class SosController extends StateNotifier<SosState> {
     // The SOS endpoint owns delivery so saved contacts receive only one alert.
     try {
       final api = _ref.read(apiProvider);
-      final res = await api.sos(position?.latitude, position?.longitude,
-          notes: notes,
-          deviceId: _ref.read(devicesProvider).selected,
-          userName: _ref.read(storeProvider).patientName,
-          bloodGroup: _ref.read(storeProvider).bloodGroup,
-          allergies: _profileValues(_ref.read(storeProvider).allergies),
-          conditions: _profileValues(_ref.read(storeProvider).conditions),
-          medications: _profileValues(_ref.read(storeProvider).medications),
-          contacts: [
-            for (final contact in currentContacts()) contact.toJson()
-          ]).timeout(const Duration(seconds: 6));
+      final watch = _ref.read(devicesProvider).bleWatch;
+      final res = await api
+          .sos(position?.latitude, position?.longitude,
+              notes: notes,
+              deviceId: watch?.deviceId ?? _ref.read(devicesProvider).selected,
+              vitals: {
+                if (watch?.vitals.heartRate != null)
+                  'heart_rate': watch!.vitals.heartRate,
+                if (watch?.vitals.spo2 != null) 'spo2': watch!.vitals.spo2,
+                if (watch?.vitals.temperature != null)
+                  'temperature': watch!.vitals.temperature,
+              },
+              userName: _ref.read(storeProvider).patientName,
+              bloodGroup: _ref.read(storeProvider).bloodGroup,
+              allergies: _profileValues(_ref.read(storeProvider).allergies),
+              conditions: _profileValues(_ref.read(storeProvider).conditions),
+              medications: _profileValues(_ref.read(storeProvider).medications),
+              contacts: [
+                for (final contact in currentContacts()) contact.toJson()
+              ])
+          .timeout(const Duration(seconds: 6));
 
       if (state.active) {
         final serverRoom = res.roomId.isNotEmpty ? res.roomId : localRoomId;
@@ -737,6 +795,8 @@ class SosController extends StateNotifier<SosState> {
         if (state.event?.eventId != event.eventId) {
           unawaited(SystemSound.play(SystemSoundType.alert));
           unawaited(HapticFeedback.heavyImpact());
+          unawaited(
+              MedicationReminderService.showSosAlert().catchError((_) {}));
           final contacts = currentContacts();
           state = SosState(
             event: event,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -46,10 +47,21 @@ async def live_ws(ws: WebSocket) -> None:
                 # echo the client's timestamp so it can measure true round-trip latency
                 await ws.send_json({"type": "pong", "t": msg.get("t"), "server_ms": int(time.time() * 1000)})
             elif kind == "ble_vitals":
-                # Phone acts as BLE gateway: sub-100 ms path from watch to everyone else watching this user.
+                # The authenticated phone is the only network gateway for a BLE watch.
                 did = str(msg.get("device_id", ""))
-                if did and ctx.hub.owner_of(did) == user.id and isinstance(msg.get("vitals"), dict):
-                    ctx.hub.ingest_direct(did, msg["vitals"])
+                vitals = msg.get("vitals")
+                valid_id = bool(did) and len(did) <= 64 and all(
+                    ch.isalnum() or ch in "_-" for ch in did
+                )
+                if valid_id and isinstance(vitals, dict):
+                    owner = ctx.hub.owner_of(did)
+                    if owner is None and ctx.hub.pair(did, user.id):
+                        owner = user.id
+                        ctx.spawn(ctx.persist.upsert(
+                            "device_pairings", {"device_id": did, "user_id": user.id}, "device_id"
+                        ))
+                    if owner == user.id:
+                        ctx.hub.ingest_direct(did, vitals)
             elif kind == "command":
                 did, cmd = str(msg.get("device_id", "")), str(msg.get("command", ""))
                 if ctx.hub.owner_of(did) == user.id:
@@ -148,6 +160,7 @@ class SosBody(BaseModel):
     lng: Optional[float] = Field(default=None, ge=-180, le=180)
     notes: str = Field(default="", max_length=300)
     device_id: Optional[str] = None
+    vitals: Optional[dict[str, Any]] = None
     user_name: Optional[str] = Field(default=None, max_length=120)
     blood_group: Optional[str] = Field(default=None, max_length=30)
     allergies: Optional[list[str]] = None
@@ -169,6 +182,15 @@ async def trigger_sos(body: SosBody, request: Request, user: User = Depends(curr
     if dev and ctx.hub.owner_of(dev) == user.id:
         v = ctx.hub.snapshot(dev)["vitals"]
         vitals = {"heart_rate": v.get("heart_rate"), "spo2": v.get("spo2"), "temperature": v.get("temperature")}
+    if body.vitals:
+        for key, limits in {
+            "heart_rate": (20, 300),
+            "spo2": (40, 100),
+            "temperature": (25, 45),
+        }.items():
+            value = body.vitals.get(key)
+            if isinstance(value, (int, float)) and limits[0] <= value <= limits[1]:
+                vitals[key] = value
     event = dispatch_sos(
         ctx,
         user_id=user.id,
@@ -215,6 +237,13 @@ class ManualReading(BaseModel):
     diastolic_bp: Optional[int] = Field(default=None, ge=20, le=200)
 
 
+class BleReading(BaseModel):
+    device_id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$")
+    heart_rate: Optional[int] = Field(default=None, ge=20, le=300)
+    spo2: Optional[int] = Field(default=None, ge=40, le=100)
+    temperature: Optional[float] = Field(default=None, ge=25, le=45)
+
+
 @router.get("/api/vitals/history")
 async def vitals_history(request: Request, limit: int = 100, user: User = Depends(current_user)) -> dict[str, Any]:
     ctx = get_ctx(request)
@@ -241,4 +270,30 @@ async def record_vitals(body: ManualReading, request: Request, user: User = Depe
         )
     )
     return {"analysis": analysis}
+
+
+@router.post("/api/vitals/ble/record")
+async def record_ble_vitals(body: BleReading, request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
+    """Save one user-requested snapshot received by the phone over BLE."""
+    values = body.model_dump(exclude={"device_id"}, exclude_none=True)
+    if not values:
+        raise HTTPException(400, "The watch has not supplied a reading yet")
+    analysis = triage.analyze(
+        heart_rate=body.heart_rate,
+        spo2=body.spo2,
+        temperature=body.temperature,
+    )
+    record = {
+        **values,
+        "user_id": user.id,
+        "device_id": body.device_id,
+        "source": "ble",
+        "ecg_status": "not_available",
+        "notes": "Saved from VitaWatch over Bluetooth",
+        "ai_analysis": analysis,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    ctx = get_ctx(request)
+    ctx.spawn(ctx.persist.insert("vitawatch_readings", record))
+    return {"reading": record, "analysis": analysis}
 # Jeevan sync: 2026-11-13
