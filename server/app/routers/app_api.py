@@ -2,144 +2,19 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from typing import Any, Literal, Optional
 
-import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from ..ctx import Context, get_ctx
-from ..security import User, current_user, websocket_user, _req_settings
+from ..security import User, current_user, websocket_user
 from ..sos_service import dispatch_sos, resolve_sos
 from .. import triage
 
 router = APIRouter(tags=["app"])
-
-
-class LocalAuthBody(BaseModel):
-    email: str = Field(min_length=3, max_length=120)
-    password: str = Field(min_length=1, max_length=120)
-    name: Optional[str] = None
-
-
-def _issue_local_session(request: Request, email: str, name: str | None = None) -> dict[str, Any]:
-    ctx = get_ctx(request)
-    settings = _req_settings(request)
-    secret = settings.supabase_jwt_secret
-    if not secret:
-        raise HTTPException(503, "SUPABASE_JWT_SECRET is not configured for local token issuance")
-    clean_email = email.strip().lower()
-    uid = "u_" + hashlib.sha256(clean_email.encode()).hexdigest()[:16]
-    now = int(time.time())
-    exp = now + 86400 * 7
-    token = jwt.encode(
-        {
-            "sub": uid,
-            "email": clean_email,
-            "name": name or clean_email.split("@")[0],
-            "aud": "authenticated",
-            "role": "authenticated",
-            "iat": now,
-            "exp": exp,
-        },
-        secret,
-        algorithm="HS256",
-    )
-    # Auto-pair and seed live demo vitals on esp32_jeevancare_01 if not paired yet so Dashboard is live immediately
-    if not ctx.hub.devices_for(uid):
-        did = "esp32_jeevancare_01" if ctx.hub.owner_of("esp32_jeevancare_01") in (None, uid) else f"esp32_{uid[:6]}"
-        ctx.hub.pair(did, uid)
-        ctx.hub.ingest_direct(
-            did,
-            {
-                "heart_rate": 76,
-                "spo2": 98,
-                "temperature": 36.7,
-                "ecg_bpm": 75,
-                "ecg": [512, 520, 540, 490, 680, 380, 530, 515, 510, 512],
-                "lead_off": False,
-                "finger_detected": True,
-                "rssi": -54,
-            },
-        )
-    return {
-        "access_token": token,
-        "refresh_token": token,
-        "expires_in": 86400 * 7,
-        "user": {"id": uid, "email": clean_email, "name": name or clean_email.split("@")[0]},
-    }
-
-
-@router.post("/api/auth/login")
-async def local_auth_login(body: LocalAuthBody, request: Request) -> dict[str, Any]:
-    return _issue_local_session(request, body.email, body.name)
-
-
-@router.post("/api/auth/signup")
-async def local_auth_signup(body: LocalAuthBody, request: Request) -> dict[str, Any]:
-    return _issue_local_session(request, body.email, body.name)
-
-
-class GoogleAuthBody(BaseModel):
-    id_token: Optional[str] = None
-    access_token: Optional[str] = None
-    email: Optional[str] = None
-    name: Optional[str] = None
-
-
-@router.post("/api/auth/google")
-async def google_auth(body: GoogleAuthBody, request: Request) -> dict[str, Any]:
-    """Verify a Google ID token or Access token and issue a local session."""
-    import httpx as _httpx
-
-    email: Optional[str] = None
-    name: Optional[str] = body.name
-
-    async with _httpx.AsyncClient() as client:
-        # 1. Try verifying via id_token if provided
-        if body.id_token:
-            try:
-                resp = await client.get(
-                    "https://oauth2.googleapis.com/tokeninfo",
-                    params={"id_token": body.id_token},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    info = resp.json()
-                    if str(info.get("email_verified", "")).lower() in ("true", "1"):
-                        email = info.get("email")
-                        name = info.get("name") or info.get("given_name") or name
-            except Exception:
-                pass
-
-        # 2. Try verifying via access_token if id_token was not present or verification failed
-        if not email and body.access_token:
-            try:
-                resp = await client.get(
-                    "https://www.googleapis.com/oauth2/v3/userinfo",
-                    headers={"Authorization": f"Bearer {body.access_token}"},
-                    timeout=10,
-                )
-                if resp.status_code == 200:
-                    info = resp.json()
-                    if str(info.get("email_verified", "")).lower() in ("true", "1") or info.get("email"):
-                        email = info.get("email")
-                        name = info.get("name") or info.get("given_name") or name
-            except Exception:
-                pass
-
-    # 3. Fallback to client-authenticated account email if verified on device
-    if not email and body.email and "@" in body.email:
-        email = body.email
-
-    if not email:
-        raise HTTPException(401, "Failed to verify Google identity")
-
-    clean_email = email.strip().lower()
-    return _issue_local_session(request, clean_email, name or clean_email.split("@")[0])
 
 
 # ── Live WebSocket ───────────────────────────────────────────────────────

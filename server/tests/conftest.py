@@ -17,7 +17,7 @@ USER_B = "22222222-2222-2222-2222-222222222222"
 
 
 def token(uid: str = USER_A, **extra) -> str:
-    payload = {"sub": uid, "aud": "authenticated", "exp": int(time.time()) + 600, "email": f"{uid[:4]}@x.com", **extra}
+    payload = {"sub": uid, "aud": "authenticated", "role": "authenticated", "iss": "https://test.supabase.co/auth/v1", "exp": int(time.time()) + 600, "email": f"{uid[:4]}@x.com", **extra}
     return jwt.encode(payload, SECRET, algorithm="HS256")
 
 
@@ -29,6 +29,7 @@ def auth(uid: str = USER_A) -> dict[str, str]:
 def settings() -> Settings:
     return Settings(
         _env_file=None,
+        supabase_url="https://test.supabase.co",
         supabase_jwt_secret=SECRET,
         device_api_key=DEVICE_KEY,
         sensor_sequence="read_max30102:15,read_dht11:4,read_ad8232:6",

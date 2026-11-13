@@ -701,6 +701,39 @@ class _HealthVaultRouteScreenState
 
   String get _userId => ref.read(authProvider).session?.userId ?? '';
 
+  Future<T?> _showVaultDialog<T>({
+    required WidgetBuilder builder,
+    bool barrierDismissible = true,
+  }) async {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final themes = InheritedTheme.capture(from: context, to: navigator.context);
+    final direction = Directionality.of(context);
+    final theme = Theme.of(context);
+    final media = MediaQuery.of(context);
+    final route = DialogRoute<T>(
+      context: context,
+      builder: (dialogContext) => Directionality(
+        textDirection: direction,
+        child: Theme(
+          data: theme,
+          child: MediaQuery(data: media, child: builder(dialogContext)),
+        ),
+      ),
+      themes: themes,
+      barrierDismissible: barrierDismissible,
+      barrierColor: DialogTheme.of(context).barrierColor ??
+          Theme.of(context).dialogTheme.barrierColor ??
+          Colors.black54,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+      traversalEdgeBehavior: TraversalEdgeBehavior.closedLoop,
+    );
+    final result = await navigator.push<T>(route);
+    // The pushed future completes as soon as pop starts; wait until Flutter
+    // removes the dialog's overlay entries before rebuilding the vault below.
+    await route.completed;
+    return result;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -821,8 +854,7 @@ class _HealthVaultRouteScreenState
   Future<void> _setupVaultPassword() async {
     final passCtrl = TextEditingController();
     final confirmCtrl = TextEditingController();
-    await showDialog<void>(
-      context: context,
+    final savedHash = await _showVaultDialog<String>(
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         backgroundColor: Palette.surface,
@@ -874,16 +906,7 @@ class _HealthVaultRouteScreenState
               final hash = _hashPassword(passCtrl.text);
               try {
                 await ref.read(apiProvider).healthVaultSetPassword(hash);
-                _vaultPasswordHash = hash;
-                _vaultLocked = false;
-                ref.read(storeProvider).setVaultUnlockedFor(_userId);
-                _setupDialogShown = true;
-                await _fetchDocuments();
-                if (ctx.mounted) Navigator.of(ctx).pop();
-                if (mounted) {
-                  setState(() {});
-                  showSnack(context, 'Vault password set successfully!');
-                }
+                if (ctx.mounted) Navigator.of(ctx).pop(hash);
               } catch (e) {
                 if (ctx.mounted) showSnack(ctx, 'Error: $e', error: true);
               }
@@ -895,6 +918,19 @@ class _HealthVaultRouteScreenState
     );
     passCtrl.dispose();
     confirmCtrl.dispose();
+    if (savedHash == null || !mounted) return;
+    _vaultPasswordHash = savedHash;
+    _vaultLocked = false;
+    ref.read(storeProvider).setVaultUnlockedFor(_userId);
+    _setupDialogShown = true;
+    setState(() {});
+    showSnack(context, 'Vault password set successfully!');
+    try {
+      await _fetchDocuments();
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not load vault documents: $e', error: true);
+    }
   }
 
   Future<bool> _promptPassword(String action) async {
@@ -903,8 +939,7 @@ class _HealthVaultRouteScreenState
         _vaultPasswordHash!.isEmpty ||
         store.isVaultUnlockedFor(_userId)) return true;
     final passCtrl = TextEditingController();
-    final result = await showDialog<bool>(
-      context: context,
+    final result = await _showVaultDialog<bool>(
       builder: (ctx) => AlertDialog(
         backgroundColor: Palette.surface,
         shape: RoundedRectangleBorder(
@@ -946,8 +981,7 @@ class _HealthVaultRouteScreenState
 
   void _unlockVault() async {
     final passCtrl = TextEditingController();
-    await showDialog<void>(
-      context: context,
+    final unlocked = await _showVaultDialog<bool>(
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         backgroundColor: Palette.surface,
@@ -975,13 +1009,9 @@ class _HealthVaultRouteScreenState
         ),
         actions: [
           FilledButton(
-            onPressed: () async {
+            onPressed: () {
               if (_verifyPassword(passCtrl.text)) {
-                Navigator.of(ctx).pop();
-                ref.read(storeProvider).setVaultUnlockedFor(_userId);
-                setState(() => _vaultLocked = false);
-                await _fetchDocuments();
-                setState(() {});
+                Navigator.of(ctx).pop(true);
               } else {
                 showSnack(ctx, 'Incorrect password', error: true);
               }
@@ -992,6 +1022,15 @@ class _HealthVaultRouteScreenState
       ),
     );
     passCtrl.dispose();
+    if (unlocked != true || !mounted) return;
+    ref.read(storeProvider).setVaultUnlockedFor(_userId);
+    setState(() => _vaultLocked = false);
+    try {
+      await _fetchDocuments();
+    } catch (e) {
+      if (mounted)
+        showSnack(context, 'Could not load vault documents: $e', error: true);
+    }
   }
 
   void _openDocumentViewer(Map<String, dynamic> doc) async {

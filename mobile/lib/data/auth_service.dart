@@ -31,7 +31,11 @@ class AuthService {
 
   Future<void> init() async {
     _session = await _store.readSession();
-    if (_session != null && _session!.expiringSoon) {
+    if (_session != null &&
+        (!_supabaseConfigured || !_isUuid(_session!.userId))) {
+      // Discard sessions created by the removed local, email-only auth path.
+      await _set(null);
+    } else if (_session != null && _session!.expiringSoon) {
       // Try to refresh the token
       try {
         final fresh = await _grant(
@@ -51,92 +55,53 @@ class AuthService {
   bool get _supabaseConfigured =>
       Config.supabaseAnonKey.isNotEmpty && Config.supabaseUrl.isNotEmpty;
 
-  String get _apiBaseUrl {
-    final o = _store.serverUrlOverride;
-    return (o != null && o.isNotEmpty ? o : Config.apiBaseUrl)
-        .replaceAll(RegExp(r'/+$'), '');
-  }
-
   Future<void> signIn(String email, String password) async {
-    if (_supabaseConfigured) {
-      try {
-        final s =
-            await _grant('password', {'email': email, 'password': password});
-        await _set(s);
-        return;
-      } catch (_) {
-        // Fall through to FastAPI local auth
-      }
-    }
-    final s = await _localAuth(
-        '/api/auth/login', {'email': email, 'password': password});
+    _requireSupabaseAuth();
+    final s = await _grant('password', {'email': email, 'password': password});
     await _set(s);
   }
 
   /// Returns true when signed in immediately, false when email confirmation is required.
   Future<bool> signUp(String email, String password, String name) async {
-    if (_supabaseConfigured) {
-      try {
-        final res = await _http
-            .post(Uri.parse('${Config.supabaseUrl}/auth/v1/signup'),
-                headers: _headers,
-                body: jsonEncode({
-                  'email': email,
-                  'password': password,
-                  'data': {'name': name}
-                }))
-            .timeout(const Duration(seconds: 10));
-        final body = _decode(res);
-        if (res.statusCode < 400) {
-          if (body['access_token'] != null) {
-            await _set(_parse(body));
-            return true;
-          }
-          return false;
-        }
-      } catch (_) {
-        // Fall through to FastAPI local auth
-      }
+    _requireSupabaseAuth();
+    final res = await _http
+        .post(Uri.parse('${Config.supabaseUrl}/auth/v1/signup'),
+            headers: _headers,
+            body: jsonEncode({
+              'email': email,
+              'password': password,
+              'data': {'name': name}
+            }))
+        .timeout(const Duration(seconds: 15));
+    final body = _decode(res);
+    if (res.statusCode >= 400) {
+      throw AuthException(_message(body));
     }
-    final s = await _localAuth('/api/auth/signup',
-        {'email': email, 'password': password, 'name': name});
-    await _set(s);
+    if (body['access_token'] == null) return false;
+    await _set(_parse(body));
     return true;
   }
 
   Future<void> recoverPassword(String email) async {
-    if (_supabaseConfigured) {
-      final res = await _http
-          .post(
-            Uri.parse('${Config.supabaseUrl}/auth/v1/recover'),
-            headers: _headers,
-            body: jsonEncode({'email': email}),
-          )
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode >= 400) {
-        final body = _decode(res);
-        throw AuthException(_message(body));
-      }
-    }
-  }
-
-  Future<Session> _localAuth(String path, Map<String, dynamic> body) async {
+    _requireSupabaseAuth();
     final res = await _http
         .post(
-          Uri.parse('$_apiBaseUrl$path'),
-          headers: const {'Content-Type': 'application/json'},
-          body: jsonEncode(body),
+          Uri.parse('${Config.supabaseUrl}/auth/v1/recover'),
+          headers: _headers,
+          body: jsonEncode({'email': email}),
         )
-        .timeout(const Duration(seconds: 10));
-    final json = _decode(res);
-    if (res.statusCode >= 400) throw AuthException(_message(json));
-    return _parse(json);
+        .timeout(const Duration(seconds: 15));
+    if (res.statusCode >= 400) {
+      final body = _decode(res);
+      throw AuthException(_message(body));
+    }
   }
 
   Future<void> signOut() => _set(null);
 
-  /// Google Sign-In: gets tokens from Google, supports both Supabase and FastAPI local sessions.
+  /// Google Sign-In: exchange Google's verified ID token with Supabase Auth.
   Future<void> signInWithGoogle() async {
+    _requireSupabaseAuth();
     final serverClientId = Config.googleServerClientId.isNotEmpty
         ? Config.googleServerClientId
         : null;
@@ -150,43 +115,23 @@ class AuthService {
 
     final googleAuth = await account.authentication;
     final idToken = googleAuth.idToken;
-    final accessToken = googleAuth.accessToken;
-
-    if (idToken == null && accessToken == null) {
-      throw AuthException('Failed to get Google credentials');
+    if (idToken == null || idToken.isEmpty) {
+      throw AuthException('Google did not return a verifiable ID token.');
     }
 
-    // 1. Try Supabase Google OAuth if configured and idToken is available
-    if (_supabaseConfigured && idToken != null && idToken.isNotEmpty) {
-      try {
-        final res = await _http
-            .post(
-              Uri.parse(
-                  '${Config.supabaseUrl}/auth/v1/token?grant_type=id_token'),
-              headers: _headers,
-              body: jsonEncode({'provider': 'google', 'id_token': idToken}),
-            )
-            .timeout(const Duration(seconds: 10));
-        if (res.statusCode < 400) {
-          final body = _decode(res);
-          if (body['access_token'] != null) {
-            await _set(_parse(body));
-            return;
-          }
-        }
-      } catch (_) {
-        // Fall through to FastAPI
-      }
+    final res = await _http
+        .post(
+          Uri.parse('${Config.supabaseUrl}/auth/v1/token?grant_type=id_token'),
+          headers: _headers,
+          body: jsonEncode({'provider': 'google', 'id_token': idToken}),
+        )
+        .timeout(const Duration(seconds: 15));
+    final body = _decode(res);
+    if (res.statusCode >= 400) throw AuthException(_message(body));
+    if (body['access_token'] == null) {
+      throw AuthException('Supabase did not return an authenticated session.');
     }
-
-    // 2. Fallback: send available token to our FastAPI backend
-    final s = await _localAuth('/api/auth/google', {
-      if (idToken != null) 'id_token': idToken,
-      if (accessToken != null) 'access_token': accessToken,
-      'email': account.email,
-      'name': account.displayName,
-    });
-    await _set(s);
+    await _set(_parse(body));
   }
 
   /// Always returns a token that is valid for at least a minute (refreshing if needed). Null if signed out.
@@ -216,6 +161,7 @@ class AuthService {
   }
 
   Future<Session> _grant(String type, Map<String, dynamic> body) async {
+    _requireSupabaseAuth();
     final res = await _http
         .post(Uri.parse('${Config.supabaseUrl}/auth/v1/token?grant_type=$type'),
             headers: _headers, body: jsonEncode(body))
@@ -227,11 +173,22 @@ class AuthService {
 
   Session _parse(Map<String, dynamic> j) {
     final user = (j['user'] as Map?)?.cast<String, dynamic>() ?? {};
+    final accessToken = j['access_token'];
+    final refreshToken = j['refresh_token'];
+    final userId = user['id'];
+    if (accessToken is! String ||
+        accessToken.isEmpty ||
+        refreshToken is! String ||
+        refreshToken.isEmpty ||
+        userId is! String ||
+        !_isUuid(userId)) {
+      throw AuthException('Supabase returned an invalid user session.');
+    }
     final expiresIn = (j['expires_in'] as num?)?.toInt() ?? 3600;
     return Session(
-      j['access_token'] as String,
-      j['refresh_token'] as String,
-      '${user['id']}',
+      accessToken,
+      refreshToken,
+      userId,
       user['email'] as String?,
       DateTime.now().add(Duration(seconds: expiresIn)),
     );
@@ -251,6 +208,18 @@ class AuthService {
           j['message'] ??
           'Authentication failed')
       .toString();
+
+  void _requireSupabaseAuth() {
+    if (!_supabaseConfigured) {
+      throw AuthException(
+        'Supabase Auth is not configured. Add SUPABASE_URL and SUPABASE_ANON_KEY to the app build.',
+      );
+    }
+  }
+
+  bool _isUuid(String value) => RegExp(
+        r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+      ).hasMatch(value);
 
   Future<void> _set(Session? s) async {
     if (s == null || (_session != null && _session!.userId != s.userId)) {

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -51,11 +52,26 @@ def _decode(token: str, settings: Settings) -> User:
     else:
         raise ValueError("unsupported token algorithm")
 
-    claims = jwt.decode(token, key, algorithms=algorithms, audience="authenticated")  # type: ignore[arg-type]
+    if not settings.supabase_url:
+        raise ValueError("SUPABASE_URL is not configured")
+    issuer = f"{settings.supabase_url.rstrip('/')}/auth/v1"
+    claims = jwt.decode(
+        token,
+        key,
+        algorithms=algorithms,
+        audience="authenticated",
+        issuer=issuer,
+    )  # type: ignore[arg-type]
     sub = claims.get("sub")
-    if not sub:
-        raise ValueError("token has no subject")
-    return User(id=str(sub), email=claims.get("email"))
+    if not isinstance(sub, str):
+        raise ValueError("token subject is not a Supabase user ID")
+    try:
+        user_id = str(uuid.UUID(sub))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("token subject is not a Supabase user ID") from exc
+    if claims.get("role") != "authenticated":
+        raise ValueError("token is not an authenticated user session")
+    return User(id=user_id, email=claims.get("email"))
 
 
 async def verify_token(token: str, settings: Settings | None = None) -> User:
