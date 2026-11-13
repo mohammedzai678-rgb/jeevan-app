@@ -293,3 +293,4 @@ async def update_profile(request: Request, user: User = Depends(current_user)) -
         await ctx.persist.upsert("profiles", {"id": user.id, **safe_fields}, "id")
     return {"status": "updated"}
 
+# Jeevan sync: 2026-11-13

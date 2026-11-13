@@ -48,3 +48,4 @@ class _MapGestureLayerState extends State<MapGestureLayer> {
     );
   }
 }
+// Jeevan sync: 2026-11-13

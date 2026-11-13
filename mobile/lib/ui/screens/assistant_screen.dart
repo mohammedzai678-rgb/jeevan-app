@@ -799,3 +799,4 @@ class _PrivateDocsSheetState extends ConsumerState<_PrivateDocsSheet> {
     );
   }
 }
+// Jeevan sync: 2026-11-13

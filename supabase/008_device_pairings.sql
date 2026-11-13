@@ -26,3 +26,4 @@ create table if not exists public.rag_documents (
 );
 create index if not exists idx_rag_documents_user on public.rag_documents (user_id, created_at);
 alter table public.rag_documents enable row level security;
+-- Jeevan sync: 2026-11-13

@@ -89,3 +89,4 @@ Analysis localTriage(Vitals v) {
   if (findings.isEmpty) return const Analysis(summary: 'Waiting for sensor data.');
   return Analysis(overallStatus: 'normal', riskScore: 10, summary: 'All measured vitals are normal.', findings: findings);
 }
+// Jeevan sync: 2026-11-13

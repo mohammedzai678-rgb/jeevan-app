@@ -106,3 +106,4 @@ def create_app(settings: Settings | None = None, index: HybridIndex | None = Non
 
 
 app = create_app()
+# Jeevan sync: 2026-11-13

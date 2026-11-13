@@ -27,3 +27,4 @@ Keep the injured area still and supported in the position found. Do not try to s
 # Head injury
 
 Seek emergency care if there is loss of consciousness, repeated vomiting, confusion, seizure, worsening headache, clear fluid from nose or ears, or unequal pupils. For minor bumps, apply a cold pack and observe for 24 hours.
+# Jeevan sync: 2026-11-13

@@ -67,3 +67,4 @@ def chunk_markdown(source: str, markdown: str, owner: Optional[str] = None, targ
         for w in windows:
             chunks.append(Chunk(id=f"{owner or 'kb'}:{source}:{len(chunks)}", source=source, heading=head, text=w, owner=owner))
     return chunks
+# Jeevan sync: 2026-11-13

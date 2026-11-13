@@ -195,3 +195,4 @@ class _SparklinePainter extends CustomPainter {
   bool shouldRepaint(covariant _SparklinePainter oldDelegate) =>
       oldDelegate.values != values || oldDelegate.color != color;
 }
+// Jeevan sync: 2026-11-13

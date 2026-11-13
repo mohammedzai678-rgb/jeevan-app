@@ -30,3 +30,4 @@ Signs: thirst, dark urine, dry mouth, dizziness, fast heartbeat. Sip oral rehydr
 
 ## Heat stroke
 Body temperature above 40 °C, hot dry or sweaty skin, confusion, fainting. This is an emergency. Call for help, move to shade or AC, remove excess clothing, cool with wet cloths, fans, and ice packs at the neck, armpits and groin.
+# Jeevan sync: 2026-11-13

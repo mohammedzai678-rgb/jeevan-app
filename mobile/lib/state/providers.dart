@@ -882,3 +882,4 @@ final chatProvider = StateNotifierProvider<ChatController, List<ChatMessage>>(
 // ── History ──────────────────────────────────────────────────────────────────────────────────────
 final historyProvider = FutureProvider.autoDispose<List<Reading>>(
     (ref) => ref.watch(apiProvider).history(limit: 200));
+// Jeevan sync: 2026-11-13

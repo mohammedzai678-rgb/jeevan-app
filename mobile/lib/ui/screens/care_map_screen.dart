@@ -1346,3 +1346,4 @@ class _GeographicRoutePainter extends CustomPainter {
   bool shouldRepaint(covariant _GeographicRoutePainter oldDelegate) =>
       oldDelegate.points != points;
 }
+// Jeevan sync: 2026-11-13

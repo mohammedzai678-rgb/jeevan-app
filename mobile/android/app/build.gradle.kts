@@ -42,3 +42,4 @@ flutter {
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 }
+// Jeevan sync: 2026-11-13

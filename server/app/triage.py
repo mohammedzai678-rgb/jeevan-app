@@ -187,3 +187,4 @@ def analyze(
 
 def worst(a: str, b: str) -> str:
     return a if _ORDER.get(a, 0) >= _ORDER.get(b, 0) else b
+# Jeevan sync: 2026-11-13

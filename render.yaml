@@ -28,3 +28,4 @@ services:
         value: huggingface
       - key: DEVICE_API_KEY
         value: jeevan_esp32_prod_2026
+# Jeevan sync: 2026-11-13

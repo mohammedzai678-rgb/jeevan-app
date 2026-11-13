@@ -1149,10 +1149,26 @@ void setup() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    // Force Google DNS — mobile hotspots often have broken DNS
+    IPAddress dns1(8, 8, 8, 8);
+    IPAddress dns2(8, 8, 4, 4);
+    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+
     if (DEBUG_MODE) {
       Serial.println("\nWiFi Connected!");
       Serial.print("IP Address: ");
       Serial.println(WiFi.localIP());
+      Serial.print("DNS: ");
+      Serial.println(WiFi.dnsIP());
+      Serial.printf("Free Heap: %u bytes\n", ESP.getFreeHeap());
+
+      // Quick DNS test
+      IPAddress resolved;
+      if (WiFi.hostByName("jeevan-app-backend-production.up.railway.app", resolved)) {
+        Serial.printf("[DNS] Resolved to %s\n", resolved.toString().c_str());
+      } else {
+        Serial.println("[DNS] FAILED to resolve backend hostname!");
+      }
     }
   } else {
     if (DEBUG_MODE) Serial.println("\nWiFi initial connect timeout, auto-reconnect + BLE active.");
@@ -1385,3 +1401,4 @@ void loop() {
 
   delay(4); // 4ms loop delay ensures smooth ~100Hz sensor sampling
 }
+// Jeevan sync: 2026-11-13

@@ -755,3 +755,4 @@ class SosResult {
   const SosResult(this.eventId, this.roomId);
   final String eventId, roomId;
 }
+// Jeevan sync: 2026-11-13

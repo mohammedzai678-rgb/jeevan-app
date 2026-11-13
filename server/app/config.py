@@ -84,3 +84,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+# Jeevan sync: 2026-11-13

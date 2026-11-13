@@ -203,3 +203,4 @@ begin
   alter publication supabase_realtime add table public.emergency_alerts;
 exception when duplicate_object then null;
 end $$;
+-- Jeevan sync: 2026-11-13

@@ -138,3 +138,4 @@ def require_device(request: Request, body: dict | None = None) -> None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "DEVICE_API_KEY is not configured on the server")
     if not device_key_valid(supplied_device_key(request, body), settings):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Unauthorized hardware device key")
+# Jeevan sync: 2026-11-13

@@ -34,3 +34,4 @@ Pull the person out without endangering yourself, call emergency services and st
 
 ## Electric shock
 Do not touch the person until the power is switched off at the source. Check breathing, start CPR if needed, and treat burns. Always seek hospital care after a significant shock.
+# Jeevan sync: 2026-11-13

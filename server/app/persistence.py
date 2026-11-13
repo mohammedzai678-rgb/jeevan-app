@@ -140,3 +140,4 @@ class Persistence:
         if not isinstance(data, list):
             raise PersistenceQueryError(resp.status_code)
         return data
+# Jeevan sync: 2026-11-13

@@ -406,3 +406,4 @@ class RtcSession {
         expiresAt: _int(j['expiresAt']) ?? 0,
       );
 }
+// Jeevan sync: 2026-11-13

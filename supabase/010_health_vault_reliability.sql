@@ -74,3 +74,4 @@ create policy "health_vault_storage_access" on storage.objects
     bucket_id = 'health-vault'
     and (storage.foldername(name))[1] = (auth.jwt() ->> 'sub')
   );
+-- Jeevan sync: 2026-11-13

@@ -241,3 +241,4 @@ async def record_vitals(body: ManualReading, request: Request, user: User = Depe
         )
     )
     return {"analysis": analysis}
+# Jeevan sync: 2026-11-13

@@ -25,3 +25,4 @@ Do not give food, drink or medication, including aspirin, because the stroke may
 2. Clear the area and cushion the head. Do not restrain the person. Never put anything in the mouth.
 3. When shaking stops, roll them onto their side (recovery position) and stay until fully alert.
 4. Call emergency services if the seizure lasts more than 5 minutes, repeats, the person is injured, pregnant, diabetic, does not wake up, or it is their first seizure.
+# Jeevan sync: 2026-11-13

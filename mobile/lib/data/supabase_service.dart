@@ -311,3 +311,4 @@ class SupabaseService {
       throw Exception('Storage delete failed: ${res.statusCode}');
   }
 }
+// Jeevan sync: 2026-11-13

@@ -47,3 +47,4 @@ class Context:
 def get_ctx(request: Request) -> Context:
     return request.app.state.ctx
 
+# Jeevan sync: 2026-11-13

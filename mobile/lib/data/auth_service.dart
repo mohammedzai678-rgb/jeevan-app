@@ -230,3 +230,4 @@ class AuthService {
     _controller.add(s);
   }
 }
+// Jeevan sync: 2026-11-13

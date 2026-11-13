@@ -213,3 +213,4 @@ inline void bleNotifyEvent(const char* eventName) {
 }
 
 #endif // JEEVAN_BLE_H
+// Jeevan sync: 2026-11-13

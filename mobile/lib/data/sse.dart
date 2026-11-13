@@ -90,3 +90,4 @@ class SseParser {
     return null;
   }
 }
+// Jeevan sync: 2026-11-13

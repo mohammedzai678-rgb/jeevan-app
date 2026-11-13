@@ -109,3 +109,4 @@ class _RingPainter extends CustomPainter {
   bool shouldRepaint(covariant _RingPainter oldDelegate) =>
       oldDelegate.progress != progress || oldDelegate.color != color;
 }
+// Jeevan sync: 2026-11-13

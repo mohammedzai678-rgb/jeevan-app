@@ -51,3 +51,4 @@ class BM25:
                     s += self.idf.get(t, 0.0) * f * (self.k1 + 1) / (f + norm)
             out[i] = s
         return out
+# Jeevan sync: 2026-11-13

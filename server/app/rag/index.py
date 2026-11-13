@@ -132,3 +132,4 @@ class HybridIndex:
                 ranked = sorted(((i, s) for (i, _), s in zip(ranked, scores)), key=lambda kv: kv[1], reverse=True)
         return [Hit(chunks[i], float(s)) for i, s in ranked[:k]]
 
+# Jeevan sync: 2026-11-13

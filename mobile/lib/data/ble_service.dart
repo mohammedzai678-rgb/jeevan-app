@@ -216,3 +216,4 @@ class BleService {
     _buf.clear();
   }
 }
+// Jeevan sync: 2026-11-13

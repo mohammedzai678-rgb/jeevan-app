@@ -66,3 +66,4 @@ Ensure the `DEVICE_API_KEY` and `DEVICE_ID` in `config.h` match your FastAPI bac
 DEVICE_ID=esp32_jeevancare_01
 DEVICE_API_KEY=jeevan_esp32_prod_2026
 ```
+# Jeevan sync: 2026-11-13

@@ -94,3 +94,4 @@ class Reranker:
         if not self._model or not passages:
             return None
         return [float(s) for s in self._model.rerank(query, passages)]
+# Jeevan sync: 2026-11-13

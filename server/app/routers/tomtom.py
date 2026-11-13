@@ -346,3 +346,4 @@ async def traffic_incidents(body: BboxBody, request: Request) -> dict[str, Any]:
     if resp.status_code >= 400:
         raise HTTPException(502, "TomTom Traffic Incidents is unavailable")
     return resp.json()
+# Jeevan sync: 2026-11-13

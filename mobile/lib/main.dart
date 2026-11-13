@@ -50,3 +50,4 @@ class JeevanApp extends ConsumerWidget {
     );
   }
 }
+// Jeevan sync: 2026-11-13

@@ -320,3 +320,4 @@ class Hub:
                 if st.was_online and not online:
                     st.was_online = False
                     self.publish(st.owner, {"type": "device_status", "data": {"device_id": st.device_id, "online": False}})
+# Jeevan sync: 2026-11-13

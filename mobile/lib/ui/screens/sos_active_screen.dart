@@ -1923,3 +1923,4 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     );
   }
 }
+// Jeevan sync: 2026-11-13

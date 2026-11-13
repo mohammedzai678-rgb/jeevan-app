@@ -1205,3 +1205,4 @@ class _SimButton extends StatelessWidget {
     );
   }
 }
+// Jeevan sync: 2026-11-13

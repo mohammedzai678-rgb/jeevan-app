@@ -28,3 +28,4 @@ For a child, use one or two hands and compress about one third of the chest dept
 
 ## Infant under 1 year
 Lay the baby face down along your forearm, head lower than the body, and give 5 back blows. Turn face up and give 5 chest thrusts with two fingers. Never do abdominal thrusts on an infant. Repeat and call for help.
+# Jeevan sync: 2026-11-13

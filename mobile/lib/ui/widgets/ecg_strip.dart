@@ -209,3 +209,4 @@ class _EcgPainter extends CustomPainter {
   bool shouldRepaint(covariant _EcgPainter oldDelegate) =>
       oldDelegate.samples != samples || oldDelegate.leadsOff != leadsOff;
 }
+// Jeevan sync: 2026-11-13

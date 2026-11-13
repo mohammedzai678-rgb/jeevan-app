@@ -1791,3 +1791,4 @@ async def ai_history_summary(request: Request, user: User = Depends(current_user
         "urgencyLevel": urgency_level,
     }
 
+# Jeevan sync: 2026-11-13

@@ -343,3 +343,4 @@ async def ack_reminder(request: Request) -> dict[str, Any]:
     device_id = str(body.get("device_id") or "esp32_jeevancare_01")
     ctx.hub.clear_reminder(device_id)
     return {"status": "success"}
+# Jeevan sync: 2026-11-13

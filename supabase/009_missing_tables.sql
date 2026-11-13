@@ -171,3 +171,4 @@ begin
   alter publication supabase_realtime add table public.vitawatch_readings;
 exception when duplicate_object then null;
 end $$;
+-- Jeevan sync: 2026-11-13

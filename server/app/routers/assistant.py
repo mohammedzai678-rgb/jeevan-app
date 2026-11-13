@@ -180,3 +180,4 @@ async def clear_documents(request: Request, user: User = Depends(current_user)) 
     ctx.user_docs_mem.pop(user.id, None)
     await run_in_threadpool(ctx.index.set_user_documents, user.id, [])
     return {"status": "cleared"}
+# Jeevan sync: 2026-11-13

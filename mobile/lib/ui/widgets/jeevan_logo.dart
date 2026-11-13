@@ -139,3 +139,4 @@ class _LogoPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
+// Jeevan sync: 2026-11-13
