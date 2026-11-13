@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -5,10 +6,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/config.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
+import '../widgets/map_gesture_layer.dart';
+import '../widgets/map_tile_image.dart';
 import 'video_call_screen.dart';
 
 /// Nearby Emergency Hospitals, TomTom Live Traffic ETA & Telemedicine Routing.
@@ -25,6 +29,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
 
   double _lat = _defaultLat;
   double _lon = _defaultLon;
+  double _mapCenterLat = _defaultLat;
+  double _mapCenterLon = _defaultLon;
+  bool _mapWasMoved = false;
   bool _usingFallbackGps = false;
 
   int _radius = 7000;
@@ -36,6 +43,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
   EmergencyRouteInfo? _route;
   bool _loadingRoute = false;
   String _travelMode = 'driving';
+  int _mapZoom = 13;
+  String? _weatherTileUrl;
+  String _weatherSource = '';
 
   @override
   void initState() {
@@ -44,38 +54,62 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
   }
 
   Future<void> _initLocationAndLoad() async {
+    if (!mounted) return;
     setState(() {
       _loadingFacilities = true;
       _error = null;
     });
     try {
-      var perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        perm = await Geolocator.requestPermission();
-      }
-      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
-        _usingFallbackGps = true;
-      } else {
-        final last = await Geolocator.getLastKnownPosition();
-        if (last != null) {
-          _lat = last.latitude;
-          _lon = last.longitude;
-          _usingFallbackGps = false;
+      final last = await Geolocator.getLastKnownPosition();
+      if (last != null) {
+        _lat = last.latitude;
+        _lon = last.longitude;
+        if (!_mapWasMoved) {
+          _mapCenterLat = _lat;
+          _mapCenterLon = _lon;
         }
-        final pos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            timeLimit: Duration(seconds: 5),
-          ),
-        );
-        _lat = pos.latitude;
-        _lon = pos.longitude;
         _usingFallbackGps = false;
+      } else {
+        _usingFallbackGps = true;
       }
     } catch (_) {
       _usingFallbackGps = true;
     }
+    if (!mounted) return;
+    unawaited(_loadWeatherLayer());
+    unawaited(_refineLocation());
     await _loadFacilities();
+  }
+
+  Future<void> _refineLocation() async {
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied)
+        permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) return;
+      final position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 3)),
+      );
+      if (!mounted ||
+          Geolocator.distanceBetween(
+                  _lat, _lon, position.latitude, position.longitude) <
+              150) return;
+      setState(() {
+        _lat = position.latitude;
+        _lon = position.longitude;
+        if (!_mapWasMoved) {
+          _mapCenterLat = _lat;
+          _mapCenterLon = _lon;
+        }
+        _usingFallbackGps = false;
+      });
+      unawaited(_loadWeatherLayer());
+      unawaited(_loadFacilities());
+    } catch (_) {
+      // Cached or default coordinates keep the map usable when GPS is slow.
+    }
   }
 
   Future<void> _loadFacilities() async {
@@ -85,7 +119,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
       _error = null;
     });
     try {
-      final list = await ref.read(apiProvider).nearbyFacilities(_lat, _lon, radius: _radius);
+      final list = await ref
+          .read(apiProvider)
+          .nearbyFacilities(_lat, _lon, radius: _radius);
       if (!mounted) return;
       setState(() {
         _facilities = list;
@@ -134,29 +170,269 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
     }
   }
 
+  Future<void> _loadWeatherLayer() async {
+    try {
+      final result =
+          await ref.read(apiProvider).weatherRadar(lat: _lat, lon: _lon);
+      if (!mounted) return;
+      setState(() {
+        _weatherTileUrl = result['tileUrl']?.toString();
+        final source = result['source']?.toString() ?? '';
+        _weatherSource = source.toLowerCase().contains('openweather')
+            ? 'OpenWeatherMap radar'
+            : source;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _weatherTileUrl = null;
+        _weatherSource = '';
+      });
+    }
+  }
+
+  double _worldX(double lon) => (lon + 180) / 360 * (1 << _mapZoom) * 256;
+
+  double _worldY(double lat) {
+    final radians = lat * math.pi / 180;
+    return (1 - math.log(math.tan(radians) + 1 / math.cos(radians)) / math.pi) /
+        2 *
+        (1 << _mapZoom) *
+        256;
+  }
+
+  Offset _mapOffset(double lat, double lon, double centerX, double centerY) =>
+      Offset(centerX + _worldX(lon) - _worldX(_mapCenterLon),
+          centerY + _worldY(lat) - _worldY(_mapCenterLat));
+
+  void _changeMapZoom(int delta) {
+    setState(() => _mapZoom = (_mapZoom + delta).clamp(4, 19));
+  }
+
+  void _panMap(Offset delta) {
+    if (delta.distance < 0.5) return;
+    final worldSize = (1 << _mapZoom) * 256.0;
+    final worldX = _worldX(_mapCenterLon) - delta.dx;
+    final worldY = (_worldY(_mapCenterLat) - delta.dy).clamp(0.0, worldSize);
+    final longitude = worldX / worldSize * 360 - 180;
+    final n = math.pi * (1 - 2 * worldY / worldSize);
+    final latitude =
+        math.atan((math.exp(n) - math.exp(-n)) / 2) * 180 / math.pi;
+    setState(() {
+      _mapCenterLat = latitude;
+      _mapCenterLon = longitude;
+      _mapWasMoved = true;
+    });
+  }
+
+  Widget _buildGeographicMap() {
+    const height = 250.0;
+    return SizedBox(
+      height: height,
+      width: double.infinity,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final centerX = width / 2;
+          final centerY = height / 2;
+          final worldX = _worldX(_mapCenterLon);
+          final worldY = _worldY(_mapCenterLat);
+          final centerTileX = (worldX / 256).floor();
+          final centerTileY = (worldY / 256).floor();
+          final fracX = worldX - centerTileX * 256;
+          final fracY = worldY - centerTileY * 256;
+          final n = 1 << _mapZoom;
+          final horizontalTileRadius = (width / 512).ceil();
+          final verticalTileRadius = (height / 512).ceil();
+          final tiles = <Widget>[];
+
+          for (var dx = -horizontalTileRadius;
+              dx <= horizontalTileRadius;
+              dx++) {
+            for (var dy = -verticalTileRadius; dy <= verticalTileRadius; dy++) {
+              final x = (centerTileX + dx) % n;
+              final y = centerTileY + dy;
+              if (y < 0 || y >= n) continue;
+              final left = centerX + dx * 256 - fracX;
+              final top = centerY + dy * 256 - fracY;
+              final weatherUrl = _weatherTileUrl
+                  ?.replaceAll('{z}', '$_mapZoom')
+                  .replaceAll('{x}', '$x')
+                  .replaceAll('{y}', '$y');
+              tiles.add(Positioned(
+                left: left,
+                top: top,
+                width: 256,
+                height: 256,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    MapTileImage(zoom: _mapZoom, x: x, y: y),
+                    if (weatherUrl != null)
+                      Opacity(
+                        opacity: 0.48,
+                        child: Image.network(weatherUrl,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                const SizedBox.shrink()),
+                      ),
+                  ],
+                ),
+              ));
+            }
+          }
+
+          final routePoints =
+              (_route?.points ?? const <({double lat, double lon})>[])
+                  .map((p) => _mapOffset(p.lat, p.lon, centerX, centerY))
+                  .toList();
+          final userPoint = _mapOffset(_lat, _lon, centerX, centerY);
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: MapGestureLayer(
+              onPan: _panMap,
+              onZoom: _changeMapZoom,
+              child: Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
+                  const Positioned.fill(
+                      child: ColoredBox(color: Color(0xFFE8EDF0))),
+                  ...tiles,
+                  if (routePoints.length > 1)
+                    Positioned.fill(
+                        child: CustomPaint(
+                            painter: _GeographicRoutePainter(routePoints))),
+                  ..._facilities.map((facility) {
+                    final point = _mapOffset(
+                        facility.lat, facility.lon, centerX, centerY);
+                    if (point.dx < -16 ||
+                        point.dy < -25 ||
+                        point.dx > width + 16 ||
+                        point.dy > height + 10) {
+                      return const SizedBox.shrink();
+                    }
+                    return Positioned(
+                      left: point.dx - 8,
+                      top: point.dy - 8,
+                      child: InkResponse(
+                        onTap: () => _selectFacility(facility),
+                        radius: 18,
+                        child: Container(
+                          width: facility.id == _selected?.id ? 16 : 11,
+                          height: facility.id == _selected?.id ? 16 : 11,
+                          decoration: BoxDecoration(
+                            color: facility.id == _selected?.id
+                                ? Palette.amber
+                                : (facility.emergency
+                                    ? Palette.red
+                                    : Palette.teal),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                            boxShadow: const [
+                              BoxShadow(color: Colors.black26, blurRadius: 3),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                  Positioned(
+                    left: userPoint.dx - 8,
+                    top: userPoint.dy - 8,
+                    child: Container(
+                      width: 16,
+                      height: 16,
+                      decoration: BoxDecoration(
+                          color: Palette.blue,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                          boxShadow: const [
+                            BoxShadow(color: Colors.black26, blurRadius: 5)
+                          ]),
+                    ),
+                  ),
+                  Positioned(
+                    right: 8,
+                    top: 8,
+                    child: Column(
+                      children: [
+                        _MapControl(
+                            icon: Icons.add_rounded,
+                            onTap: () => _changeMapZoom(1)),
+                        const SizedBox(height: 5),
+                        _MapControl(
+                            icon: Icons.remove_rounded,
+                            onTap: () => _changeMapZoom(-1)),
+                      ],
+                    ),
+                  ),
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 7,
+                    child: Align(
+                      alignment: Alignment.bottomLeft,
+                      child: Tooltip(
+                        message:
+                            'Map: OpenStreetMap contributors. TomTom is the keyed fallback.',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 4),
+                          decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.88),
+                              borderRadius: BorderRadius.circular(6)),
+                          child: Text(
+                            _weatherTileUrl != null
+                                ? '${_weatherSource.isEmpty ? 'Weather radar' : _weatherSource} • © OpenStreetMap contributors • TomTom backup'
+                                : '© OpenStreetMap contributors • TomTom backup',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.black87,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _openNavigation(CareFacility f) async {
     final uri = Uri.parse(
       'https://www.google.com/maps/dir/?api=1&destination=${f.lat},${f.lon}&travelmode=driving',
     );
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) showSnack(context, 'Could not launch turn-by-turn navigation.', error: true);
+      if (mounted)
+        showSnack(context, 'Could not launch turn-by-turn navigation.',
+            error: true);
     }
   }
 
   Future<void> _callHospital(String phone) async {
     final cleaned = phone.trim();
     if (cleaned.isEmpty) {
-      showSnack(context, 'No direct phone listed; dialing emergency 108.', error: false);
+      showSnack(context, 'No direct phone listed; dialing emergency 108.',
+          error: false);
     }
     final uri = Uri.parse('tel:${cleaned.isEmpty ? '108' : cleaned}');
     if (!await launchUrl(uri)) {
-      if (mounted) showSnack(context, 'Could not open phone dialer.', error: true);
+      if (mounted)
+        showSnack(context, 'Could not open phone dialer.', error: true);
     }
   }
 
   void _openTelemedicine(CareFacility f) {
     final slug = f.id.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '');
-    final channelId = 'consult-${slug.isEmpty ? 'er' : (slug.length > 16 ? slug.substring(0, 16) : slug)}';
+    final channelId =
+        'consult-${slug.isEmpty ? 'er' : (slug.length > 16 ? slug.substring(0, 16) : slug)}';
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => VideoCallScreen(
@@ -217,7 +493,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 IconButton(
                   tooltip: 'Refresh GPS & Hospitals',
                   onPressed: _loadingFacilities ? null : _initLocationAndLoad,
-                  icon: const Icon(Icons.my_location_rounded, color: Palette.teal),
+                  icon: const Icon(Icons.my_location_rounded,
+                      color: Palette.teal),
                 ),
                 const SizedBox(width: 6),
               ],
@@ -257,7 +534,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                         ),
                         Text(
                           'TomTom Live Traffic ETA & Hospital Routing',
-                          style: TextStyle(color: Palette.textDim, fontSize: 12.5),
+                          style:
+                              TextStyle(color: Palette.textDim, fontSize: 12.5),
                         ),
                       ],
                     ),
@@ -265,7 +543,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                   IconButton(
                     tooltip: 'Refresh GPS & Hospitals',
                     onPressed: _loadingFacilities ? null : _initLocationAndLoad,
-                    icon: const Icon(Icons.my_location_rounded, color: Palette.teal),
+                    icon: const Icon(Icons.my_location_rounded,
+                        color: Palette.teal),
                   ),
                 ],
               ),
@@ -287,7 +566,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                     selectedColor: Palette.redLight,
                     backgroundColor: Palette.surface,
                     side: BorderSide(
-                      color: _travelMode == m.id ? Palette.red : Palette.outline,
+                      color:
+                          _travelMode == m.id ? Palette.red : Palette.outline,
                     ),
                     label: Text(
                       m.label,
@@ -313,17 +593,21 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
                     color: Palette.teal.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: Palette.teal.withValues(alpha: 0.35)),
+                    border:
+                        Border.all(color: Palette.teal.withValues(alpha: 0.35)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        _usingFallbackGps ? Icons.location_searching_rounded : Icons.gps_fixed_rounded,
+                        _usingFallbackGps
+                            ? Icons.location_searching_rounded
+                            : Icons.gps_fixed_rounded,
                         color: Palette.teal,
                         size: 14,
                       ),
@@ -354,7 +638,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                         label: Text(
                           r.label,
                           style: TextStyle(
-                            color: _radius == r.meters ? Palette.teal : Palette.textDim,
+                            color: _radius == r.meters
+                                ? Palette.teal
+                                : Palette.textDim,
                             fontSize: 12,
                             fontWeight: FontWeight.w700,
                           ),
@@ -363,7 +649,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                         selectedColor: Palette.teal.withValues(alpha: 0.16),
                         backgroundColor: Palette.surface,
                         side: BorderSide(
-                          color: _radius == r.meters ? Palette.teal : Palette.outline,
+                          color: _radius == r.meters
+                              ? Palette.teal
+                              : Palette.outline,
                         ),
                         onSelected: (sel) {
                           if (!sel || _radius == r.meters) return;
@@ -378,7 +666,7 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
 
             const SizedBox(height: 12),
 
-            // ── Interactive TomTom Emergency Radar & Route Canvas ───────────────
+            // ── Geographic map with weather layer and facility pins ────────────
             GlassCard(
               padding: const EdgeInsets.all(14),
               color: const Color(0xFF0D1729),
@@ -388,11 +676,12 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.radar_rounded, color: Palette.teal, size: 18),
+                      const Icon(Icons.map_rounded,
+                          color: Palette.teal, size: 18),
                       const SizedBox(width: 8),
                       const Expanded(
                         child: Text(
-                          'TOMTOM EMERGENCY RADAR & LIVE TRAFFIC',
+                          'EMERGENCY MAP & LIVE ROUTE',
                           style: TextStyle(
                             color: Palette.teal,
                             fontSize: 11,
@@ -413,38 +702,16 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  SizedBox(
-                    height: 230,
-                    width: double.infinity,
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final size = Size(constraints.maxWidth, 230);
-                        return GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTapUp: (d) => _handleRadarTap(d.localPosition, size),
-                          child: CustomPaint(
-                            size: size,
-                            painter: _TomTomRadarPainter(
-                              originLat: _lat,
-                              originLon: _lon,
-                              maxDistMeters: _computeMaxRadiusMeters(),
-                              facilities: _facilities,
-                              selected: _selected,
-                              route: _route,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
+                  _buildGeographicMap(),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 12,
                     runSpacing: 6,
                     children: [
                       _LegendDot(color: Palette.red, label: '24×7 Emergency'),
-                      _LegendDot(color: Palette.teal, label: 'Hospital / Clinic'),
-                      _LegendDot(color: Palette.blue, label: 'TomTom Route'),
+                      _LegendDot(
+                          color: Palette.teal, label: 'Hospital / Clinic'),
+                      _LegendDot(color: Palette.blue, label: 'Route'),
                     ],
                   ),
                 ],
@@ -466,7 +733,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Palette.teal),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Palette.teal),
                     )
                   : null,
             ),
@@ -510,8 +778,10 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
 
   Widget _buildSelectedRouteCard(CareFacility f) {
     final r = _route;
-    final distKm = ((r?.distanceMeters ?? f.distanceMeters ?? 0) / 1000.0).toStringAsFixed(1);
-    final etaMin = r != null ? math.max(1, (r.travelTimeSeconds / 60).round()) : null;
+    final distKm = ((r?.distanceMeters ?? f.distanceMeters ?? 0) / 1000.0)
+        .toStringAsFixed(1);
+    final etaMin =
+        r != null ? math.max(1, (r.travelTimeSeconds / 60).round()) : null;
     final delaySec = r?.trafficDelaySeconds ?? 0;
     final delayMin = (delaySec / 60).round();
 
@@ -520,7 +790,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
         : delayMin >= 1
             ? Palette.amber
             : Palette.green;
-    final String delayLabel = delayMin >= 1 ? '+$delayMin min traffic' : 'Clear traffic';
+    final String delayLabel =
+        delayMin >= 1 ? '+$delayMin min traffic' : 'Clear traffic';
 
     return GlassCard(
       padding: const EdgeInsets.all(16),
@@ -536,11 +807,14 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 width: 44,
                 height: 44,
                 decoration: BoxDecoration(
-                  color: (f.emergency ? Palette.red : Palette.teal).withValues(alpha: 0.15),
+                  color: (f.emergency ? Palette.red : Palette.teal)
+                      .withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: Icon(
-                  f.emergency ? Icons.emergency_rounded : Icons.local_hospital_rounded,
+                  f.emergency
+                      ? Icons.emergency_rounded
+                      : Icons.local_hospital_rounded,
                   color: f.emergency ? Palette.red : Palette.teal,
                   size: 24,
                 ),
@@ -563,7 +837,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                       f.address.isNotEmpty
                           ? f.address
                           : '${f.lat.toStringAsFixed(4)}, ${f.lon.toStringAsFixed(4)}',
-                      style: const TextStyle(color: Palette.textDim, fontSize: 12),
+                      style:
+                          const TextStyle(color: Palette.textDim, fontSize: 12),
                     ),
                   ],
                 ),
@@ -573,7 +848,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 decoration: BoxDecoration(
                   color: Palette.blue.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: Palette.blue.withValues(alpha: 0.4)),
+                  border:
+                      Border.all(color: Palette.blue.withValues(alpha: 0.4)),
                 ),
                 child: Text(
                   (r?.source ?? f.source).toUpperCase(),
@@ -612,13 +888,15 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                   ),
                 ),
                 const SizedBox(width: 14),
-                const Icon(Icons.schedule_rounded, color: Palette.blue, size: 18),
+                const Icon(Icons.schedule_rounded,
+                    color: Palette.blue, size: 18),
                 const SizedBox(width: 6),
                 if (_loadingRoute)
                   const SizedBox(
                     width: 14,
                     height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Palette.teal),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Palette.teal),
                   )
                 else
                   Text(
@@ -632,11 +910,13 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                   ),
                 const Spacer(),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                   decoration: BoxDecoration(
                     color: delayColor.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: delayColor.withValues(alpha: 0.4)),
+                    border:
+                        Border.all(color: delayColor.withValues(alpha: 0.4)),
                   ),
                   child: Text(
                     delayLabel,
@@ -663,7 +943,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                     minimumSize: const Size(0, 46),
                     backgroundColor: Palette.teal,
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
                   ),
                   onPressed: () => _openNavigation(f),
                   icon: const Icon(Icons.navigation_rounded, size: 18),
@@ -675,11 +956,14 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Palette.text,
                   side: const BorderSide(color: Palette.outline),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14)),
                 ),
                 onPressed: () => _callHospital(f.phone),
-                icon: const Icon(Icons.call_rounded, size: 18, color: Palette.green),
+                icon: const Icon(Icons.call_rounded,
+                    size: 18, color: Palette.green),
                 label: Text(f.phone.isNotEmpty ? 'Call' : '108'),
               ),
             ],
@@ -695,10 +979,12 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 foregroundColor: Palette.blue,
                 side: BorderSide(color: Palette.blue.withValues(alpha: 0.45)),
                 padding: const EdgeInsets.symmetric(vertical: 11),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
               onPressed: () => _openTelemedicine(f),
-              icon: const Icon(Icons.videocam_rounded, size: 18, color: Palette.blue),
+              icon: const Icon(Icons.videocam_rounded,
+                  size: 18, color: Palette.blue),
               label: const Text('Start Agora Telemedicine Consult'),
             ),
           ),
@@ -709,7 +995,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
 
   Widget _buildFacilityTile(CareFacility f) {
     final isSelected = _selected?.id == f.id;
-    final distKm = f.distanceMeters != null ? '${(f.distanceMeters! / 1000).toStringAsFixed(1)} km' : '';
+    final distKm = f.distanceMeters != null
+        ? '${(f.distanceMeters! / 1000).toStringAsFixed(1)} km'
+        : '';
 
     return GlassCard(
       padding: const EdgeInsets.all(14),
@@ -722,11 +1010,14 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
             width: 40,
             height: 40,
             decoration: BoxDecoration(
-              color: (f.emergency ? Palette.red : Palette.teal).withValues(alpha: 0.14),
+              color: (f.emergency ? Palette.red : Palette.teal)
+                  .withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
-              f.emergency ? Icons.local_hospital_rounded : Icons.medical_services_outlined,
+              f.emergency
+                  ? Icons.local_hospital_rounded
+                  : Icons.medical_services_outlined,
               color: f.emergency ? Palette.red : Palette.teal,
               size: 20,
             ),
@@ -773,7 +1064,8 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                     if (f.address.isNotEmpty)
                       Text(
                         f.address,
-                        style: const TextStyle(color: Palette.textDim, fontSize: 12),
+                        style: const TextStyle(
+                            color: Palette.textDim, fontSize: 12),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -798,7 +1090,9 @@ class _CareMapScreenState extends ConsumerState<CareMapScreen> {
                 ),
               const SizedBox(height: 4),
               Icon(
-                isSelected ? Icons.radio_button_checked_rounded : Icons.chevron_right_rounded,
+                isSelected
+                    ? Icons.radio_button_checked_rounded
+                    : Icons.chevron_right_rounded,
                 color: isSelected ? Palette.teal : Palette.textDim,
                 size: 18,
               ),
@@ -865,8 +1159,10 @@ class _TomTomRadarPainter extends CustomPainter {
     final axisPaint = Paint()
       ..strokeWidth = 0.8
       ..color = Palette.outline.withValues(alpha: 0.5);
-    canvas.drawLine(Offset(center.dx - maxR, center.dy), Offset(center.dx + maxR, center.dy), axisPaint);
-    canvas.drawLine(Offset(center.dx, center.dy - maxR), Offset(center.dx, center.dy + maxR), axisPaint);
+    canvas.drawLine(Offset(center.dx - maxR, center.dy),
+        Offset(center.dx + maxR, center.dy), axisPaint);
+    canvas.drawLine(Offset(center.dx, center.dy - maxR),
+        Offset(center.dx, center.dy + maxR), axisPaint);
 
     // Active route polyline
     if (selected != null) {
@@ -949,7 +1245,8 @@ class _TomTomRadarPainter extends CustomPainter {
     }
 
     // User location marker at center
-    canvas.drawCircle(center, 11, Paint()..color = Palette.teal.withValues(alpha: 0.25));
+    canvas.drawCircle(
+        center, 11, Paint()..color = Palette.teal.withValues(alpha: 0.25));
     canvas.drawCircle(center, 6, Paint()..color = Colors.white);
     canvas.drawCircle(center, 4, Paint()..color = Palette.teal);
   }
@@ -982,9 +1279,70 @@ class _LegendDot extends StatelessWidget {
         const SizedBox(width: 5),
         Text(
           label,
-          style: const TextStyle(color: Palette.textDim, fontSize: 11, fontWeight: FontWeight.w600),
+          style: const TextStyle(
+              color: Palette.textDim,
+              fontSize: 11,
+              fontWeight: FontWeight.w600),
         ),
       ],
     );
   }
+}
+
+class _MapControl extends StatelessWidget {
+  const _MapControl({required this.icon, required this.onTap});
+
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => Material(
+        color: Colors.white.withValues(alpha: 0.92),
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: SizedBox(
+              width: 34,
+              height: 34,
+              child: Icon(icon, color: Palette.text, size: 20)),
+        ),
+      );
+}
+
+class _GeographicRoutePainter extends CustomPainter {
+  const _GeographicRoutePainter(this.points);
+
+  final List<Offset> points;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (final point in points.skip(1)) {
+      path.lineTo(point.dx, point.dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Palette.blue.withValues(alpha: 0.35)
+        ..strokeWidth = 8
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke,
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Palette.blue
+        ..strokeWidth = 4
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _GeographicRoutePainter oldDelegate) =>
+      oldDelegate.points != points;
 }

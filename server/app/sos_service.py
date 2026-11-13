@@ -26,36 +26,45 @@ def dispatch_sos(
     *,
     user_id: str,
     source: str,
-    lat: float,
-    lng: float,
+    lat: Optional[float],
+    lng: Optional[float],
     gps_fix: bool = True,
     device_id: Optional[str] = None,
     vitals: Optional[dict[str, Any]] = None,
     notes: str = "",
     extra_location: Optional[dict[str, Any]] = None,
+    profile: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     event_id = str(uuid.uuid4())
     room_id = room_id_for(event_id)
     now = datetime.now(timezone.utc).isoformat()
-    location = {"lat": lat, "lng": lng, "gps_fix": gps_fix, "source": source, **(extra_location or {})}
+    location = {"gps_fix": bool(gps_fix and lat is not None and lng is not None), "source": source, **(extra_location or {})}
+    if lat is not None and lng is not None:
+        location.update({"lat": lat, "lng": lng})
     event = {
         "event_id": event_id,
         "room_id": room_id,
         "source": source,
         "device_id": device_id,
         "location": location,
-        "maps_url": maps_link(lat, lng),
+        "maps_url": maps_link(lat, lng) if lat is not None and lng is not None else "",
         "vitals": vitals or {},
         "status": "active",
         "timestamp": now,
     }
     ctx.hub.latest_sos[user_id] = event
     ctx.hub.publish(user_id, {"type": "sos", "data": event})
-    ctx.spawn(_persist_and_notify(ctx, user_id, event, notes))
+    ctx.spawn(_persist_and_notify(ctx, user_id, event, notes, profile or {}))
     return event
 
 
-async def _persist_and_notify(ctx: Context, user_id: str, event: dict[str, Any], notes: str) -> None:
+async def _persist_and_notify(
+    ctx: Context,
+    user_id: str,
+    event: dict[str, Any],
+    notes: str,
+    profile_payload: dict[str, Any],
+) -> None:
     loc = event["location"]
     vit = event.get("vitals") or {}
     summary = ", ".join(f"{k} {v}" for k, v in vit.items() if v) or "n/a"
@@ -85,16 +94,44 @@ async def _persist_and_notify(ctx: Context, user_id: str, event: dict[str, Any],
 
     profile = (await ctx.persist.select("profiles", {"uid": f"eq.{user_id}", "select": "name,email", "limit": "1"})) or [{}]
     summary_rows = await ctx.persist.select(
-        "emergency_summaries", {"uid": f"eq.{user_id}", "select": "emergencyContacts", "limit": "1"}
+        "emergency_summaries", {"uid": f"eq.{user_id}", "limit": "1"}
     )
-    contacts = list((summary_rows[0].get("emergencyContacts") if summary_rows else None) or [])
-    name = profile[0].get("name") or "A Jeevan user"
+    summary_row = summary_rows[0] if summary_rows else {}
+    contacts = list(
+        profile_payload.get("contacts")
+        if isinstance(profile_payload.get("contacts"), list)
+        else (summary_row.get("emergencyContacts") or [])
+    )
+    name = str(profile_payload.get("user_name") or profile[0].get("name") or "A Jeevan user")
     email = profile[0].get("email")
     if email and not any((c.get("email") or "").lower() == email.lower() for c in contacts):
         contacts.append({"name": name, "email": email})  # the user always gets their own confirmation
 
+    details = []
+    for key, profile_key, label in (
+        ("allergies", "allergies", "Allergies"),
+        ("conditions", "conditions", "Conditions"),
+        ("currentMedications", "medications", "Medications"),
+    ):
+        values = profile_payload.get(profile_key)
+        if values is None:
+            values = summary_row.get(key)
+        if isinstance(values, list):
+            value = ", ".join(str(item).strip() for item in values if str(item).strip())
+        else:
+            value = str(values or "").strip()
+        if value and value.lower() not in {"none", "none reported", "not provided", "not specified", "unknown"}:
+            details.append(f"{label}: {value}")
     results = await ctx.notifier.send_sos(
-        user_name=name, lat=loc["lat"], lng=loc["lng"], event_id=event["event_id"], room_id=event["room_id"], contacts=contacts
+        user_name=name,
+        lat=loc.get("lat"),
+        lng=loc.get("lng"),
+        event_id=event["event_id"],
+        room_id=event["room_id"],
+        contacts=contacts,
+        blood_group=str(profile_payload.get("blood_group") or summary_row.get("bloodType") or "Not specified"),
+        medical_details=" | ".join(details),
+        user_id=user_id,
     )
     ctx.hub.publish(user_id, {"type": "sos_delivery", "data": {"event_id": event["event_id"], "results": results}})
 

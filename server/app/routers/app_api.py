@@ -261,10 +261,16 @@ async def device_reminder_ack(device_id: str, request: Request, user: User = Dep
 
 # ── SOS ──────────────────────────────────────────────────────────────────
 class SosBody(BaseModel):
-    lat: float = Field(ge=-90, le=90)
-    lng: float = Field(ge=-180, le=180)
+    lat: Optional[float] = Field(default=None, ge=-90, le=90)
+    lng: Optional[float] = Field(default=None, ge=-180, le=180)
     notes: str = Field(default="", max_length=300)
     device_id: Optional[str] = None
+    user_name: Optional[str] = Field(default=None, max_length=120)
+    blood_group: Optional[str] = Field(default=None, max_length=30)
+    allergies: Optional[list[str]] = None
+    conditions: Optional[list[str]] = None
+    medications: Optional[list[str]] = None
+    contacts: Optional[list[dict[str, Any]]] = None
 
 
 class SosLocationBody(BaseModel):
@@ -280,7 +286,18 @@ async def trigger_sos(body: SosBody, request: Request, user: User = Depends(curr
     if dev and ctx.hub.owner_of(dev) == user.id:
         v = ctx.hub.snapshot(dev)["vitals"]
         vitals = {"heart_rate": v.get("heart_rate"), "spo2": v.get("spo2"), "temperature": v.get("temperature")}
-    event = dispatch_sos(ctx, user_id=user.id, source="app_button", lat=body.lat, lng=body.lng, device_id=dev, vitals=vitals, notes=body.notes)
+    event = dispatch_sos(
+        ctx,
+        user_id=user.id,
+        source="app_button",
+        lat=body.lat,
+        lng=body.lng,
+        gps_fix=body.lat is not None and body.lng is not None,
+        device_id=dev,
+        vitals=vitals,
+        notes=body.notes,
+        profile=body.model_dump(exclude_none=True),
+    )
     return {"status": "success", "event_id": event["event_id"], "room_id": event["room_id"]}
 
 
@@ -292,6 +309,7 @@ async def sos_location(event_id: str, body: SosLocationBody, request: Request, u
         raise HTTPException(404, "No active SOS with that id")
     loc = {"lat": body.lat, "lng": body.lng, "gps_fix": True, "source": "app_gps_update"}
     latest["location"] = loc
+    latest["maps_url"] = f"https://maps.google.com/?q={body.lat},{body.lng}"
     ctx.hub.publish(user.id, {"type": "sos_location", "data": {"event_id": event_id, "location": loc}})
     ctx.spawn(ctx.persist.update("sos_events", {"id": event_id, "uid": user.id}, {"location": loc}))
     return {"status": "success"}

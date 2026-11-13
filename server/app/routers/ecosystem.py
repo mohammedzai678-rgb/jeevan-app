@@ -9,10 +9,15 @@
 """
 from __future__ import annotations
 
+import base64
+import io
+import json
 import random
 import re
 import time
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -335,12 +340,13 @@ class EmergencyContactModel(BaseModel):
 
 class EmergencySummaryBody(BaseModel):
     name: str = "Jeevan User"
-    bloodType: str = "O+"
+    bloodType: str = "Not specified"
     dob: str = ""
     allergies: list[str] = Field(default_factory=list)
     conditions: list[str] = Field(default_factory=list)
     currentMedications: list[str] = Field(default_factory=list)
     emergencyContacts: list[EmergencyContactModel] = Field(default_factory=list)
+    showEmergencyContacts: bool = True
 
 
 @router.get("/api/emergency-summary")
@@ -353,8 +359,8 @@ async def get_my_emergency_summary(request: Request, user: User = Depends(curren
     mem = _SUMMARIES_MEM.get(user.id) or {
         "uid": user.id,
         "name": (user.email or "Jeevan User").split("@")[0],
-        "bloodType": "O+",
-        "dob": "1995-01-01",
+        "bloodType": "Not specified",
+        "dob": "",
         "allergies": [],
         "conditions": [],
         "currentMedications": [],
@@ -375,6 +381,7 @@ async def update_my_emergency_summary(body: EmergencySummaryBody, request: Reque
         "conditions": body.conditions,
         "currentMedications": body.currentMedications,
         "emergencyContacts": [c.model_dump() for c in body.emergencyContacts],
+        "showEmergencyContacts": body.showEmergencyContacts,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
     _SUMMARIES_MEM[user.id] = row
@@ -540,7 +547,6 @@ async def vitawatch_delete_reading(reading_id: str, request: Request, user: User
 
 @router.post("/api/vitawatch/analyze")
 async def vitawatch_analyze(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
-    _ = user
     body = await _json_body(request)
     hr_raw, spo2_raw, temp_raw = body.get("heart_rate"), body.get("spo2"), body.get("temperature")
     if hr_raw is None or spo2_raw is None or temp_raw is None:
@@ -596,7 +602,7 @@ async def notify_medication_status(request: Request, user: User = Depends(curren
     taken = bool(body.get("taken"))
     dosage = str(body.get("dosage") or "").strip()
     sched_time = str(body.get("time") or "daily dose").strip()
-    user_name = str(body.get("userName") or "zaid").strip()
+    user_name = str(body.get("userName") or (user.email or "Jeevan User").split("@")[0]).strip()
     ctx = get_ctx(request)
     wa_res = await ctx.notifier.send_medication_status(
         to_phone=to_phone,
@@ -624,13 +630,13 @@ async def _handle_emergency_dispatch(request: Request, user: User) -> dict[str, 
     event_id = str(body.get("eventId") or "").strip()
     loc = body.get("location") if isinstance(body.get("location"), dict) else {}
     lat, lng = loc.get("lat"), loc.get("lng")
-    if not event_id or not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
-        raise HTTPException(400, "eventId and numeric location (lat, lng) are required")
+    if not event_id:
+        raise HTTPException(400, "eventId is required")
     raw_room = str(body.get("roomId") or f"jeevan-sos-{event_id}")
     resolved_room_id = _sanitize_room_id(raw_room)
     contacts = body.get("contacts") if isinstance(body.get("contacts"), list) else []
-    user_name = str(body.get("userName") or "zaid")
-    blood_group = str(body.get("bloodGroup") or "A+")
+    user_name = str(body.get("userName") or (user.email or "Jeevan User").split("@")[0])
+    blood_group = str(body.get("bloodGroup") or "Not specified")
     med_raw = body.get("medicalDetails")
     if isinstance(med_raw, dict):
         parts = [f"{k}: {v}" for k, v in med_raw.items() if v]
@@ -640,8 +646,8 @@ async def _handle_emergency_dispatch(request: Request, user: User) -> dict[str, 
     ctx = get_ctx(request)
     results = await ctx.notifier.send_sos(
         user_name=user_name,
-        lat=float(lat),
-        lng=float(lng),
+        lat=float(lat) if isinstance(lat, (int, float)) else None,
+        lng=float(lng) if isinstance(lng, (int, float)) else None,
         event_id=event_id,
         room_id=resolved_room_id,
         contacts=contacts,
@@ -690,7 +696,7 @@ async def notifications_video_call_invite(request: Request, user: User = Depends
 
     sanitized_room_id = _sanitize_room_id(room_id)
     ctx = get_ctx(request)
-    user_name = str(body.get("userName") or (user.email or "zaid").split("@")[0])
+    user_name = str(body.get("userName") or (user.email or "Jeevan User").split("@")[0])
     results = await ctx.notifier.send_video_invite(
         user_name=user_name,
         room_id=sanitized_room_id,
@@ -907,6 +913,238 @@ async def _run_rag_clinical(
     }
 
 
+async def _analyze_medical_document(
+    ctx: Context,
+    *,
+    instruction: str,
+    context: str,
+    document_base64: str,
+    mime_type: str,
+    language: Optional[str],
+) -> str:
+    """Run Gemini's vision input on an uploaded report or scan; never replace it with canned findings."""
+    if not ctx.settings.gemini_api_key:
+        raise HTTPException(503, "Medical image analysis is unavailable until GEMINI_API_KEY is configured.")
+    mime = mime_type.strip().lower()
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    if mime not in {"image/jpeg", "image/png", "image/webp", "application/pdf"}:
+        raise HTTPException(415, "Upload a PDF, JPEG, PNG, or WebP medical document.")
+
+    encoded = document_base64.strip()
+    if encoded.startswith("data:") and "," in encoded:
+        encoded = encoded.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise HTTPException(400, "The uploaded file could not be read. Please choose it again.") from exc
+    if not raw:
+        raise HTTPException(400, "The uploaded file is empty.")
+    if len(raw) > 15 * 1024 * 1024:
+        raise HTTPException(413, "Medical document uploads must be 15 MB or smaller.")
+
+    language_name = _resolve_language_name(language)
+    prompt = (
+        f"{instruction}\n\n"
+        f"Patient context: {context or 'None provided.'}\n"
+        f"Respond in {language_name}. Use readable headings and complete sentences. "
+        "Only report information you can actually read in the supplied file. Mark uncertain or unreadable details clearly. "
+        "Do not invent measurements, medications, diagnoses, or image findings. State that this is an informational AI review, not a diagnosis."
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{ctx.settings.gemini_model}:generateContent"
+    response = await ctx.http.post(
+        url,
+        json={
+            "systemInstruction": {"parts": [{"text": "You are a careful medical document assistant. Preserve the meaning and units of all clinical values."}]},
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {"inlineData": {"mimeType": mime, "data": base64.b64encode(raw).decode("ascii")}},
+                ],
+            }],
+            "generationConfig": {"temperature": 0.1, "topP": 0.85, "maxOutputTokens": 3200},
+        },
+        headers={"x-goog-api-key": ctx.settings.gemini_api_key},
+        timeout=max(60.0, float(ctx.settings.llm_timeout_s)),
+    )
+    if response.status_code >= 400:
+        raise HTTPException(502, "The medical AI service could not analyze this file. Please try again.")
+    try:
+        payload = response.json()
+        parts = payload["candidates"][0]["content"]["parts"]
+        result = "\n".join(str(part.get("text") or "") for part in parts).strip()
+    except (KeyError, IndexError, TypeError, ValueError):
+        result = ""
+    if not result:
+        raise HTTPException(502, "The medical AI service returned no readable analysis. Please retry with a clearer file.")
+    return result
+
+
+async def _analyze_any_document(
+    ctx: Context,
+    *,
+    filename: str,
+    document_base64: Optional[str],
+    mime_type: str,
+    text: str,
+    language: Optional[str],
+) -> dict[str, Any]:
+    """Classify and summarize a supported document without assuming it is medical."""
+    if not ctx.settings.gemini_api_key:
+        raise HTTPException(503, "Document analysis is unavailable until the AI service is configured.")
+
+    extension_mimes = {
+        ".pdf": "application/pdf",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".csv": "text/csv",
+        ".rtf": "text/rtf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    if not mime or mime == "application/octet-stream":
+        extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        mime = extension_mimes.get(extension, "")
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    allowed = {
+        "application/pdf", "image/jpeg", "image/png", "image/webp",
+        "text/plain", "text/markdown", "text/csv", "text/rtf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    if document_base64 and mime not in allowed:
+        raise HTTPException(415, "Choose a PDF, Word document, text file, CSV, RTF, JPEG, PNG, or WebP file.")
+
+    file_parts: list[dict[str, Any]] = []
+    if document_base64:
+        encoded = document_base64.strip()
+        if encoded.startswith("data:") and "," in encoded:
+            encoded = encoded.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise HTTPException(400, "The uploaded file could not be read. Please choose it again.") from exc
+        if not raw:
+            raise HTTPException(400, "The uploaded file is empty.")
+        if len(raw) > 15 * 1024 * 1024:
+            raise HTTPException(413, "Document uploads must be 15 MB or smaller.")
+
+        if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            try:
+                with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                    xml = ET.fromstring(archive.read("word/document.xml"))
+                body_text = " ".join(
+                    node.text or ""
+                    for node in xml.iter()
+                    if node.tag.endswith("}t") and node.text
+                ).strip()
+            except (KeyError, ET.ParseError, zipfile.BadZipFile) as exc:
+                raise HTTPException(400, "The Word document could not be read. Please export it again and retry.") from exc
+            if body_text:
+                file_parts.append({"text": f"Document text extracted from {filename}:\n{body_text[:120000]}"})
+        elif mime in {"text/plain", "text/markdown", "text/csv", "text/rtf"}:
+            decoded = raw.decode("utf-8-sig", errors="replace")
+            if mime == "text/rtf":
+                decoded = re.sub(r"\\[a-zA-Z]+-?\d* ?|[{}]", " ", decoded)
+            file_parts.append({"text": f"Document text from {filename}:\n{decoded[:120000]}"})
+        else:
+            file_parts.append({"inlineData": {"mimeType": mime, "data": base64.b64encode(raw).decode("ascii")}})
+
+    source_text = text.strip()
+    if source_text:
+        file_parts.append({"text": f"Additional text supplied by the user:\n{source_text[:12000]}"})
+    if not file_parts:
+        raise HTTPException(400, "Choose a document or enter text to analyze.")
+
+    language_name = _resolve_language_name(language)
+    prompt = (
+        "Identify what this document is and summarize its actual contents in plain, complete sentences. "
+        "Classify it as medical only when it contains health records, clinical results, prescriptions, or similar medical content. "
+        "For a non-medical file, explicitly say in the summary: 'This is not a medical document.' Then identify its type and summarize it normally. "
+        "Do not add medical advice or clinical findings to a non-medical summary. "
+        "For medical files, preserve visible values, units, reference ranges, medication names and doses; do not infer absent details. "
+        "List key points and any clearly printed action items. Mark illegible content as uncertain. "
+        f"Respond in {language_name}. The filename is only a hint; classify from the contents."
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{ctx.settings.gemini_model}:generateContent"
+    response = await ctx.http.post(
+        url,
+        json={
+            "systemInstruction": {"parts": [{"text": "You are a careful document reader. Read the supplied file itself and never claim that its contents were not supplied when file data is present."}]},
+            "contents": [{"role": "user", "parts": [{"text": prompt}, *file_parts]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "topP": 0.85,
+                "maxOutputTokens": 3500,
+                "responseMimeType": "application/json",
+                "responseSchema": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "documentType": {"type": "STRING"},
+                        "isMedicalDocument": {"type": "BOOLEAN"},
+                        "summary": {"type": "STRING"},
+                        "keyFindings": {"type": "ARRAY", "items": {"type": "STRING"}},
+                        "medications": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "name": {"type": "STRING"},
+                                    "dosage": {"type": "STRING"},
+                                    "instructions": {"type": "STRING"},
+                                },
+                                "required": ["name", "dosage", "instructions"],
+                            },
+                        },
+                        "actionItems": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    },
+                    "required": ["documentType", "isMedicalDocument", "summary", "keyFindings", "medications", "actionItems"],
+                },
+            },
+        },
+        headers={"x-goog-api-key": ctx.settings.gemini_api_key},
+        timeout=max(60.0, float(ctx.settings.llm_timeout_s)),
+    )
+    if response.status_code >= 400:
+        raise HTTPException(502, "The AI service could not analyze this document. Please try again.")
+    try:
+        parts = response.json()["candidates"][0]["content"]["parts"]
+        generated = "\n".join(str(part.get("text") or "") for part in parts).strip()
+        try:
+            result = json.loads(generated)
+        except json.JSONDecodeError:
+            object_start = generated.find("{")
+            object_end = generated.rfind("}")
+            if object_start < 0 or object_end <= object_start:
+                raise
+            result = json.loads(generated[object_start : object_end + 1])
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        raise HTTPException(502, "The AI service returned an unreadable document summary. Please retry.")
+
+    doc_type = str(result.get("documentType") or "Document").strip() or "Document"
+    is_medical = result.get("isMedicalDocument") is True
+    summary = str(result.get("summary") or "The document could not be summarized clearly.").strip()
+    if not is_medical and "not a medical document" not in summary.lower():
+        summary = f"This is not a medical document. It appears to be a {doc_type}. {summary}"
+    result["documentType"] = doc_type
+    result["isMedicalDocument"] = is_medical
+    result["summary"] = summary
+    result["medicalDocumentNotice"] = (
+        f"AI review of {filename}; confirm medical details against the original document."
+        if is_medical
+        else f"This is not a medical document. It was classified as a {doc_type}."
+    )
+    if not is_medical:
+        result["medications"] = []
+        result["actionItems"] = []
+    return result
+
+
 @router.post("/api/gemini/triage")
 async def ai_triage(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
     body = await _json_body(request)
@@ -1097,21 +1335,55 @@ async def ai_wellbeing(request: Request, user: User = Depends(current_user)) -> 
     msg = str(body.get("message") or body.get("text") or "").strip()
     if not msg:
         raise HTTPException(400, "message or text is required")
-    history = body.get("history") if isinstance(body.get("history"), list) else []
-    history_context = " ".join(
-        str(h.get("text") or h.get("content") or "") for h in history[-5:] if isinstance(h, dict)
-    ).strip()
-    full_query = f"{history_context}\nUser: {msg}".strip() if history_context else msg
-    rag_res = await _run_rag_clinical(
-        get_ctx(request),
-        user.id,
-        "Respond as Sarah, a calm, empathetic mental-wellbeing and stress-support companion using evidence-based grounding, breathing, and cognitive reframing techniques. If crisis/self-harm is mentioned, prioritize crisis helplines (iCall 9152987821, Vandrevala 1860-2662-345, 112).",
-        full_query,
-        body.get("language"),
+    ctx = get_ctx(request)
+    if not ctx.settings.gemini_api_key:
+        raise HTTPException(503, "Sarah is temporarily unavailable because the AI service is not configured.")
+    raw_history = body.get("history") if isinstance(body.get("history"), list) else []
+    history: list[dict[str, str]] = []
+    for turn in raw_history[-8:]:
+        if not isinstance(turn, dict):
+            continue
+        content = str(turn.get("text") or turn.get("content") or "").strip()
+        if not content:
+            continue
+        role = "user" if str(turn.get("role") or "").lower() == "user" else "model"
+        history.append({"role": role, "content": content[:2000]})
+    language_name = _resolve_language_name(body.get("language"))
+    system_instruction = (
+        "You are Sarah, a warm, thoughtful AI companion. Answer the user's actual question across everyday topics, "
+        "including conversation, learning, planning, technology, hobbies, and well-being. Give a complete, useful answer "
+        "in natural language; do not redirect ordinary questions into breathing exercises or medical content. Use the prior "
+        "conversation when it helps, and ask a follow-up only when it adds value. Be honest when you do not know or when a "
+        "question needs current information. For health questions, give general information, do not diagnose or prescribe, "
+        "and encourage professional care for urgent symptoms. If the user may hurt themselves or someone else, respond with "
+        "care, encourage immediate support from a trusted person, and advise calling 112 or an appropriate local crisis line. "
+        f"Reply in {language_name}."
     )
+    chunks: list[str] = []
+    try:
+        async for token in llm.stream_gemini(
+            ctx.settings,
+            ctx.http,
+            msg,
+            history,
+            system_instruction=system_instruction,
+            max_output_tokens=2200,
+        ):
+            chunks.append(token)
+    except Exception as exc:
+        raise HTTPException(502, "Sarah could not reach the AI service. Please try again.") from exc
+    answer = "".join(chunks).strip()
+    if not answer:
+        raise HTTPException(502, "Sarah did not receive a complete reply. Please try again.")
+    emergency = llm.detect_emergency(msg)
+    language = body.get("language") or "en"
     return {
-        "reply": rag_res["response"],
-        **rag_res,
+        "reply": answer,
+        "response": answer,
+        "emergency": emergency,
+        "sources": [],
+        "provider": "gemini",
+        "language": language,
     }
 
 
@@ -1168,222 +1440,127 @@ async def ai_vitals_report(request: Request, user: User = Depends(current_user))
 @router.post("/api/gemini/diagnostic-imaging")
 async def ai_diagnostic_imaging(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
     body = await _json_body(request)
-    doc_b64 = body.get("documentBase64")
-    text_in = str(body.get("text") or "").strip()
-    if not doc_b64 and not text_in:
-        raise HTTPException(400, "documentBase64 and mimeType (or text) required")
-
+    document = body.get("documentBase64")
     imaging_type = str(body.get("imagingType") or "X-Ray").strip()
     body_region = str(body.get("bodyRegion") or "Chest").strip()
-    clinical_context = str(body.get("clinicalContext") or text_in or "Routine diagnostic evaluation").strip()
+    clinical_context = str(body.get("clinicalContext") or body.get("text") or "").strip()
+    language = body.get("language")
+    if not document and not clinical_context:
+        raise HTTPException(400, "Upload an image or provide clinical context before analysis.")
 
-    log_id = f"img_{uuid.uuid4().hex[:12]}"
-    response_data: dict[str, Any] = {
+    ctx = get_ctx(request)
+    if document:
+        assessment = await _analyze_medical_document(
+            ctx,
+            instruction=(
+                f"Review the uploaded {imaging_type} of the {body_region}. Describe only visible image quality and findings. "
+                "Separate observations from possible interpretations, and do not provide a diagnosis."
+            ),
+            context=clinical_context,
+            document_base64=str(document),
+            mime_type=str(body.get("mimeType") or "image/jpeg"),
+            language=language,
+        )
+        provider = "gemini_vision"
+    else:
+        result = await _run_rag_clinical(
+            ctx,
+            user.id,
+            f"Give cautious general guidance about reviewing a {imaging_type} of the {body_region}. Do not claim to see an image that was not uploaded.",
+            clinical_context,
+            language,
+        )
+        assessment = result["response"]
+        provider = result["provider"]
+
+    return {
         "imagingType": imaging_type,
         "bodyRegion": body_region,
-        "overallAssessment": f"Preliminary AI {imaging_type} review of {body_region}",
-        "confidenceScore": 84,
-        "findings": [
-            {
-                "finding": f"Primary {body_region} anatomical alignment and parenchymal density",
-                "location": f"Central {body_region} field",
-                "severity": "Normal",
-                "description": f"Anatomical contours within the central {body_region.lower()} zone appear preserved without gross displacement.",
-                "boundingBox": {"x": 22.0, "y": 18.0, "width": 56.0, "height": 58.0},
-            },
-            {
-                "finding": "Region of clinical correlation interest",
-                "location": f"Lower {body_region} quadrant",
-                "severity": "Mild",
-                "description": f"Subtle attenuation noted in the {body_region.lower()} region; correlate with clinical context ({clinical_context[:60]}).",
-                "boundingBox": {"x": 35.0, "y": 48.0, "width": 28.0, "height": 26.0},
-            },
-        ],
-        "possibleConditions": [
-            {
-                "condition": f"Benign / physiological {body_region.lower()} variant",
-                "likelihood": "65%",
-                "description": "Most consistent with baseline anatomical appearance requiring clinical correlation.",
-            },
-            {
-                "condition": f"Early localized {body_region.lower()} inflammatory change",
-                "likelihood": "25%",
-                "description": "May represent mild focal change if supported by physical examination.",
-            },
-        ],
-        "abnormalities": [
-            f"Mild focal density variation in {body_region.lower()} field requiring clinical correlation."
-        ],
-        "differentialDiagnosis": [
-            f"Normal {body_region} {imaging_type} study",
-            f"Mild localized inflammatory or post-infectious change in {body_region}",
-        ],
-        "anatomicalNotes": [
-            f"Osseous and soft-tissue margins of {body_region} are adequately visualized.",
-            "Cardiomediastinal / regional contours appear within expected limits.",
-        ],
-        "urgencyLevel": "Routine",
+        "overallAssessment": assessment,
+        "summary": assessment,
+        "response": assessment,
         "recommendations": [
-            "Correlate imaging findings with physical examination and clinical history.",
-            "Compare with prior imaging studies if available.",
-            "This AI analysis is preliminary and must be reviewed by a qualified radiologist.",
+            "Have a qualified radiologist or clinician review the original study before making care decisions.",
+            "AI image review can miss subtle or urgent findings and does not replace a formal report.",
         ],
-        "limitations": [
-            "Automated 2D projection analysis cannot replace a formal diagnostic radiology report.",
-            "Subtle findings may depend on image resolution and patient positioning.",
-        ],
-        "summary": (
-            f"Preliminary {imaging_type} analysis of the {body_region} demonstrates preserved overall alignment "
-            f"with one focal region highlighted for clinical correlation ({clinical_context[:80]}). "
-            "Please review with a qualified radiologist."
-        ),
-        "logId": log_id,
+        "provider": provider,
+        "language": language or "en",
+        "logId": f"img_{uuid.uuid4().hex[:12]}",
     }
-    _RLHF_MEM[log_id] = {
-        "id": log_id,
-        "uid": user.id,
-        "scan_type": "imaging",
-        "input_params": {"imagingType": imaging_type, "bodyRegion": body_region, "clinicalContext": clinical_context},
-        "ai_response": response_data,
-        "is_verified": False,
-    }
-    ctx = get_ctx(request)
-    if ctx.persist.enabled:
-        ctx.spawn(
-            ctx.persist.insert(
-                "mediscan_logs",
-                {
-                    "id": log_id,
-                    "uid": user.id,
-                    "scan_type": "imaging",
-                    "input_params": {"imagingType": imaging_type, "bodyRegion": body_region, "clinicalContext": clinical_context},
-                    "ai_response": response_data,
-                },
-            )
-        )
-    return response_data
 
 
 @router.post("/api/gemini/mediscan")
 async def ai_mediscan(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
     body = await _json_body(request)
     text_in = str(body.get("text") or "").strip()
-    doc_b64 = body.get("documentBase64")
-    if not text_in and not doc_b64:
-        raise HTTPException(400, "Either text or documentBase64 is required")
+    document = body.get("documentBase64")
+    if not text_in and not document:
+        raise HTTPException(400, "Enter report text or upload a medical document.")
 
-    filename = str(body.get("filename") or "medical_report.pdf").strip()
-    additional = str(body.get("additionalContext") or "").strip()
-    query = text_in or f"Analyze uploaded medical document '{filename}'. {additional}".strip()
-
-    rag_res = await _run_rag_clinical(
-        get_ctx(request),
-        user.id,
-        "Analyze this medical report, lab result, or prescription text. Summarize: (1) Key Findings in plain language, (2) Values outside normal reference ranges, (3) Questions to ask the attending physician.",
-        query,
-        body.get("language"),
+    filename = str(body.get("filename") or "document").strip()
+    language = body.get("language")
+    ctx = get_ctx(request)
+    analysis = await _analyze_any_document(
+        ctx,
+        filename=filename,
+        document_base64=str(document) if document else None,
+        mime_type=str(body.get("mimeType") or ""),
+        text=text_in,
+        language=language,
     )
-    return {
-        "documentType": "Prescription / Lab Report",
-        "summary": rag_res["response"],
-        "isMedicalDocument": True,
-        "medicalDocumentNotice": f"This appears to be a medical document ({filename}).",
-        "keyFindings": [
-            rag_res["response"][:240],
-            "Review all highlighted parameters and medication dosages against reference ranges.",
-        ],
-        "medications": [
-            {
-                "name": "Paracetamol" if "paracetamol" in query.lower() else "Prescribed Medication",
-                "dosage": "As directed on prescription",
-                "instructions": "Take after meals with water; consult physician before adjusting dose.",
-            }
-        ],
-        "actionItems": [
-            "Verify dosage timings and duration with your prescribing doctor or pharmacist.",
-            "Keep a digital copy of this report in your Jeevan Health Locker.",
-            "This AI analysis is not a substitute for professional medical advice. Please consult a qualified healthcare provider.",
-        ],
-        **rag_res,
-    }
+    analysis["response"] = analysis["summary"]
+    analysis["provider"] = "gemini_document"
+    analysis["language"] = language or "en"
+    return analysis
 
 
 @router.post("/api/gemini/medicine-ingredients")
 async def ai_medicine_analyzer(request: Request, user: User = Depends(current_user)) -> dict[str, Any]:
     body = await _json_body(request)
-    text_in = str(body.get("text") or "").strip()
-    doc_b64 = body.get("documentBase64")
-    if not text_in and not doc_b64:
-        raise HTTPException(400, "Either text or documentBase64 is required")
+    medicine = str(body.get("medicineName") or body.get("text") or "").strip()
+    document = body.get("documentBase64")
+    if not medicine and not document:
+        raise HTTPException(400, "Enter a medicine name or upload a clear package label.")
 
-    filename = str(body.get("filename") or "medicine_label.png").strip()
-    query = text_in or f"Medicine label scan: {filename}"
-    rag_res = await _run_rag_clinical(
-        get_ctx(request),
-        user.id,
-        "Explain this medication: (1) Active class & purpose, (2) Typical dosing & timing precautions, (3) Common side effects, (4) Key contraindications & Ayurvedic alternatives.",
-        query,
-        body.get("language"),
-    )
+    filename = str(body.get("filename") or "medicine_label").strip()
+    language = body.get("language")
+    ctx = get_ctx(request)
+    if document:
+        analysis = await _analyze_medical_document(
+            ctx,
+            instruction=(
+                "Read the medicine package or label. Identify the medicine name and active ingredients only when legible. "
+                "Explain the labeled use, warnings, and dosage exactly as printed. Clearly say when a detail cannot be read; do not infer a dose or recommend starting/stopping a medicine."
+            ),
+            context=medicine,
+            document_base64=str(document),
+            mime_type=str(body.get("mimeType") or "image/jpeg"),
+            language=language,
+        )
+        provider = "gemini_vision"
+    else:
+        result = await _run_rag_clinical(
+            ctx,
+            user.id,
+            "Explain the medicine name provided using reliable general information. Note when the exact formulation or dosage is unknown. Do not invent package-specific ingredients.",
+            medicine,
+            language,
+        )
+        analysis = result["response"]
+        provider = result["provider"]
 
-    med_name = "Paracetamol (Acetaminophen)" if "paracetamol" in query.lower() else (text_in[:50] if text_in else "Analyzed Formulation")
     return {
-        "medicineName": med_name,
-        "category": "Analgesic & Antipyretic",
-        "ingredients": [
-            {
-                "name": med_name,
-                "type": "Active Ingredient",
-                "role": "Pain relief and fever reduction",
-                "description": "Acts centrally to inhibit prostaglandin synthesis, helping reduce fever and mild-to-moderate pain.",
-            },
-            {
-                "name": "Pharmaceutical Excipients (Starch, Povidone)",
-                "type": "Excipient",
-                "role": "Tablet binder and disintegrant",
-                "description": "Ensures uniform tablet dissolution and absorption in the gastrointestinal tract.",
-            },
-        ],
-        "uses": [
-            "Relief of mild to moderate pain (headache, muscle ache, dental pain)",
-            "Reduction of fever associated with common infections",
-        ],
-        "sideEffects": [
-            {
-                "effect": "Mild gastric discomfort or nausea",
-                "severity": "Mild",
-                "frequency": "Uncommon",
-                "description": "Taking with food or water generally minimizes stomach irritation.",
-            },
-            {
-                "effect": "Hepatotoxicity (with overdose)",
-                "severity": "Serious",
-                "frequency": "Rare (dose-dependent)",
-                "description": "Exceeding maximum daily limits or combining with alcohol increases liver injury risk.",
-            },
-        ],
-        "ayurvedicAlternatives": [
-            {
-                "name": "Guduchi (Tinospora cordifolia / Giloy)",
-                "ingredients": ["Guduchi stem extract"],
-                "uses": "Supports natural antipyretic response and immunity during mild fevers",
-                "howItHelps": "Traditionally used in Ayurveda (Jwarahara) to balance Pitta and support recovery.",
-                "dosageGuidance": "Consult a qualified BAMS / AYUSH practitioner for individualized dosing.",
-            },
-            {
-                "name": "Tulsi & Shunthi (Holy Basil & Dry Ginger Decoction)",
-                "ingredients": ["Ocimum sanctum", "Zingiber officinale"],
-                "uses": "Soothing support for mild body aches, cold, and throat irritation",
-                "howItHelps": "Provides gentle anti-inflammatory and warming digestive (Deepana-Pachana) support.",
-                "dosageGuidance": "1 cup warm herbal infusion 1–2 times daily as supportive care.",
-            },
-        ],
-        "warnings": [
-            "Do not exceed 4,000 mg of paracetamol in 24 hours across all combined medicines.",
-            "Avoid concurrent alcohol consumption; consult a doctor if you have liver or kidney disease.",
-        ],
-        "disclaimer": "This analysis is AI-generated and not a substitute for professional medical or pharmaceutical advice. Always consult a qualified healthcare provider or pharmacist before making medication decisions.",
-        **rag_res,
+        "medicineName": medicine or filename,
+        "response": analysis,
+        "analysis": analysis,
+        "ingredients": [],
+        "uses": [],
+        "sideEffects": [],
+        "ayurvedicAlternatives": [],
+        "warnings": [],
+        "disclaimer": "Verify medicine identity and directions with a pharmacist or clinician before use.",
+        "provider": provider,
+        "language": language or "en",
     }
 
 

@@ -13,11 +13,12 @@ import 'screens/jeevan_routes_screens.dart';
 import 'screens/medications_screen.dart';
 import 'screens/medikiosk_screen.dart';
 import 'screens/sos_active_screen.dart';
+import 'screens/settings_screen.dart';
 import 'screens/walking_stick_screen.dart';
 import 'widgets/common.dart';
 import 'widgets/jeevan_logo.dart';
 
-/// All 14 JeevanCare routes displayed in the vertical Sidebar Drawer list.
+/// JeevanCare routes displayed in the vertical Sidebar Drawer list.
 class JeevanRouteItem {
   const JeevanRouteItem({
     required this.id,
@@ -157,6 +158,14 @@ const kJeevanRoutes = <JeevanRouteItem>[
     icon: Icons.auto_awesome_rounded,
     color: Palette.amber,
   ),
+  JeevanRouteItem(
+    id: 'settings',
+    emoji: '⚙️',
+    label: 'Account & Settings',
+    subtitle: 'Server, health history & app preferences',
+    icon: Icons.settings_rounded,
+    color: Palette.purple,
+  ),
 ];
 
 class AppShell extends ConsumerStatefulWidget {
@@ -166,7 +175,8 @@ class AppShell extends ConsumerStatefulWidget {
   ConsumerState<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver {
+class _AppShellState extends ConsumerState<AppShell>
+    with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   String _activeRoute = 'dashboard';
@@ -195,7 +205,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
     WidgetsBinding.instance.addObserver(this);
     Future.microtask(() {
       ref.read(liveProvider).start();
-      unawaited(ref.read(devicesProvider.notifier).refresh().catchError((_) {}));
+      unawaited(
+          ref.read(devicesProvider.notifier).refresh().catchError((_) {}));
       unawaited(ref.read(bleProvider).autoConnect());
     });
   }
@@ -204,7 +215,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       ref.read(liveProvider).start();
-      unawaited(ref.read(devicesProvider.notifier).refresh().catchError((_) {}));
+      unawaited(
+          ref.read(devicesProvider.notifier).refresh().catchError((_) {}));
       unawaited(ref.read(bleProvider).autoConnect());
     }
   }
@@ -270,6 +282,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
         return const MediKioskScreen();
       case 'about':
         return AboutUsRouteScreen(onNavigate: _navigateTo);
+      case 'settings':
+        return const SettingsScreen();
       case 'profile':
         return ProfileRouteScreen(
           key: ValueKey('profile-$_activeSubTab'),
@@ -303,7 +317,9 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
           context,
           '✅ Safe Alert sent via SMS, Email & WhatsApp! SOS deactivated.',
         );
-      } else if (!next.active && next.tapCount > 0 && next.tapCount != (prev?.tapCount ?? 0)) {
+      } else if (!next.active &&
+          next.tapCount > 0 &&
+          next.tapCount != (prev?.tapCount ?? 0)) {
         ScaffoldMessenger.of(context).clearSnackBars();
         showSnack(
           context,
@@ -390,7 +406,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
                           ],
                         ),
                       ),
-                      const Icon(Icons.chevron_right_rounded, color: Palette.textMuted),
+                      const Icon(Icons.chevron_right_rounded,
+                          color: Palette.textMuted),
                     ],
                   ),
                 ),
@@ -400,7 +417,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
               // Clean Vertical List of All 14 JeevanCare Routes (Zero Overlapping)
               Expanded(
                 child: ListView(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   children: [
                     for (final item in kJeevanRoutes)
                       Padding(
@@ -427,12 +445,14 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
                           .map(
                             (l) => PopupMenuItem<String>(
                               value: l,
-                              child: Text(l, style: const TextStyle(fontSize: 14)),
+                              child:
+                                  Text(l, style: const TextStyle(fontSize: 14)),
                             ),
                           )
                           .toList(),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 11),
                         child: Row(
                           children: [
                             const Text('🌐', style: TextStyle(fontSize: 18)),
@@ -447,7 +467,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
                                 ),
                               ),
                             ),
-                            const Icon(Icons.unfold_more_rounded, size: 18, color: Palette.textMuted),
+                            const Icon(Icons.unfold_more_rounded,
+                                size: 18, color: Palette.textMuted),
                           ],
                         ),
                       ),
@@ -516,7 +537,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
                           borderRadius: BorderRadius.circular(12),
                         ),
                       ),
-                      icon: const Icon(Icons.menu_rounded, color: Palette.text, size: 22),
+                      icon: const Icon(Icons.menu_rounded,
+                          color: Palette.text, size: 22),
                     ),
                     const SizedBox(width: 10),
                     // JeevanCare Logo + Wordmark (wrapped in Expanded so it can never overflow)
@@ -529,7 +551,8 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
                           child: FittedBox(
                             fit: BoxFit.scaleDown,
                             alignment: Alignment.centerLeft,
-                            child: const JeevanWordmark(logoSize: 32, fontSize: 18.5),
+                            child: const JeevanWordmark(
+                                logoSize: 32, fontSize: 18.5),
                           ),
                         ),
                       ),
@@ -553,19 +576,28 @@ class _AppShellState extends ConsumerState<AppShell> with WidgetsBindingObserver
                       borderRadius: BorderRadius.circular(12),
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 220),
-                        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 11, vertical: 7),
                         decoration: BoxDecoration(
                           gradient: sos.active
                               ? const LinearGradient(
-                                  colors: [Color(0xFF10B981), Color(0xFF059669)],
+                                  colors: [
+                                    Color(0xFF10B981),
+                                    Color(0xFF059669)
+                                  ],
                                 )
                               : const LinearGradient(
-                                  colors: [Color(0xFFEF4444), Color(0xFFDC2626)],
+                                  colors: [
+                                    Color(0xFFEF4444),
+                                    Color(0xFFDC2626)
+                                  ],
                                 ),
                           borderRadius: BorderRadius.circular(12),
                           boxShadow: [
                             BoxShadow(
-                              color: (sos.active ? const Color(0xFF10B981) : Palette.red)
+                              color: (sos.active
+                                      ? const Color(0xFF10B981)
+                                      : Palette.red)
                                   .withValues(alpha: 0.30),
                               blurRadius: 10,
                               offset: const Offset(0, 3),

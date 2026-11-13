@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/config.dart';
@@ -10,6 +12,8 @@ import '../../core/theme.dart';
 import '../../data/models.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
+import 'jeevan_routes_screens.dart';
+import 'settings_screen.dart';
 
 /// Live Agora RTC Telemedicine & Emergency Responder Video Room.
 class VideoCallScreen extends ConsumerStatefulWidget {
@@ -26,10 +30,17 @@ class VideoCallScreen extends ConsumerStatefulWidget {
   ConsumerState<VideoCallScreen> createState() => _VideoCallScreenState();
 }
 
-class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTickerProviderStateMixin {
+class _VideoCallScreenState extends ConsumerState<VideoCallScreen>
+    with SingleTickerProviderStateMixin {
   RtcSession? _session;
   String? _error;
   bool _loading = true;
+  RtcEngine? _engine;
+  bool _localJoined = false;
+  int? _localUid;
+  int? _remoteUid;
+  String _connectionStatus = 'Preparing call';
+  String? _rtcError;
 
   bool _micMuted = false;
   bool _camOff = false;
@@ -48,7 +59,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
     super.initState();
     _joinChannel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && _session != null) {
+      if (mounted && _localJoined) {
         setState(() => _elapsed += const Duration(seconds: 1));
       }
     });
@@ -58,6 +69,7 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
   void dispose() {
     _timer?.cancel();
     _pulse.dispose();
+    unawaited(_leaveAgora());
     super.dispose();
   }
 
@@ -70,12 +82,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
       final session = await ref
           .read(apiProvider)
           .createRtcChannel(widget.channelId)
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 8));
       if (!mounted) return;
       setState(() {
         _session = session;
         _loading = false;
+        _connectionStatus = 'Connecting to Agora';
       });
+      await _connectAgora(session);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -83,6 +97,95 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
         _loading = false;
       });
     }
+  }
+
+  Future<void> _connectAgora(RtcSession session) async {
+    final permissions =
+        await [Permission.camera, Permission.microphone].request();
+    if (permissions.values.any((status) => !status.isGranted)) {
+      throw StateError(
+          'Allow camera and microphone access to start the video call.');
+    }
+
+    final engine = createAgoraRtcEngine();
+    _engine = engine;
+    await engine.initialize(RtcEngineContext(
+      appId: session.appId,
+      channelProfile: ChannelProfileType.channelProfileCommunication,
+    ));
+    engine.registerEventHandler(RtcEngineEventHandler(
+      onJoinChannelSuccess: (connection, elapsed) {
+        if (!mounted) return;
+        setState(() {
+          _localJoined = true;
+          _localUid = connection.localUid;
+          _connectionStatus =
+              _remoteUid == null ? 'Waiting for participant' : 'Connected';
+        });
+      },
+      onUserJoined: (connection, remoteUid, elapsed) {
+        if (!mounted) return;
+        setState(() {
+          _remoteUid = remoteUid;
+          _connectionStatus = 'Connected';
+        });
+      },
+      onUserOffline: (connection, remoteUid, reason) {
+        if (!mounted) return;
+        setState(() {
+          if (_remoteUid == remoteUid) _remoteUid = null;
+          _connectionStatus = 'Waiting for participant';
+        });
+      },
+      onError: (code, message) {
+        if (!mounted) return;
+        setState(() {
+          _rtcError = message;
+          _connectionStatus = 'Call connection failed';
+        });
+      },
+    ));
+    await engine.setClientRole(role: ClientRoleType.clientRoleBroadcaster);
+    await engine.enableVideo();
+    await engine.startPreview();
+    await engine.joinChannelWithUserAccount(
+      token: session.token,
+      channelId: session.channelId,
+      userAccount: session.uid,
+      options: const ChannelMediaOptions(),
+    );
+  }
+
+  Future<void> _leaveAgora() async {
+    final engine = _engine;
+    _engine = null;
+    if (engine == null) return;
+    try {
+      await engine.leaveChannel();
+    } catch (_) {}
+    try {
+      await engine.release();
+    } catch (_) {}
+  }
+
+  Future<void> _setMicrophoneMuted(bool muted) async {
+    setState(() => _micMuted = muted);
+    await _engine?.muteLocalAudioStream(muted);
+  }
+
+  Future<void> _setCameraOff(bool off) async {
+    setState(() => _camOff = off);
+    await _engine?.muteLocalVideoStream(off);
+  }
+
+  Future<void> _setSpeakerEnabled(bool enabled) async {
+    setState(() => _speakerOn = enabled);
+    await _engine?.setEnableSpeakerphone(enabled);
+  }
+
+  Future<void> _switchCamera() async {
+    setState(() => _frontCamera = !_frontCamera);
+    await _engine?.switchCamera();
   }
 
   String _fmtDuration(Duration d) {
@@ -102,10 +205,22 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
     }
   }
 
+  void _openProfilePage() {
+    Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const ProfileRouteScreen()));
+  }
+
+  void _openSettingsPage() {
+    Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const SettingsScreen()));
+  }
+
   Future<void> _launchExternalRoom() async {
     final uri = Uri.parse(_inviteUrl);
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) showSnack(context, 'Could not launch external Agora room.', error: true);
+      if (mounted)
+        showSnack(context, 'Could not launch external Agora room.',
+            error: true);
     }
   }
 
@@ -126,14 +241,16 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
             children: [
               Text(
                 'Send an instant Agora Telemedicine room invite link for "${widget.channelId}" over WhatsApp, SMS & Email.',
-                style: const TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.35),
+                style: const TextStyle(
+                    color: Palette.textDim, fontSize: 12.5, height: 1.35),
               ),
               const SizedBox(height: 14),
               TextField(
                 controller: nameCtrl,
                 decoration: const InputDecoration(
                   labelText: 'Doctor / Contact Name *',
-                  prefixIcon: Icon(Icons.person_outline_rounded, color: Palette.teal),
+                  prefixIcon:
+                      Icon(Icons.person_outline_rounded, color: Palette.teal),
                 ),
               ),
               const SizedBox(height: 10),
@@ -162,7 +279,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel', style: TextStyle(color: Palette.textDim)),
+            child:
+                const Text('Cancel', style: TextStyle(color: Palette.textDim)),
           ),
           FilledButton.icon(
             style: FilledButton.styleFrom(
@@ -199,11 +317,13 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
             email: email.isEmpty ? null : email,
           );
       if (mounted) {
-        showSnack(context, 'Video call invite dispatched to $name via WhatsApp & Email!');
+        showSnack(context,
+            'Video call invite dispatched to $name via WhatsApp & Email!');
       }
     } catch (e) {
       if (mounted) {
-        showSnack(context, 'Could not dispatch video call invite: $e', error: true);
+        showSnack(context, 'Could not dispatch video call invite: $e',
+            error: true);
       }
     }
   }
@@ -237,7 +357,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
                   children: [
                     IconButton(
                       onPressed: () => Navigator.of(context).maybePop(),
-                      icon: const Icon(Icons.arrow_back_rounded, color: Palette.text),
+                      icon: const Icon(Icons.arrow_back_rounded,
+                          color: Palette.text),
                     ),
                     Expanded(
                       child: Column(
@@ -268,11 +389,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      constraints: const BoxConstraints(maxWidth: 112),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 6),
                       decoration: BoxDecoration(
                         color: Palette.teal.withValues(alpha: 0.14),
                         borderRadius: BorderRadius.circular(999),
-                        border: Border.all(color: Palette.teal.withValues(alpha: 0.45)),
+                        border: Border.all(
+                            color: Palette.teal.withValues(alpha: 0.45)),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -280,34 +404,56 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
                           Container(
                             width: 7,
                             height: 7,
-                            decoration: const BoxDecoration(
-                              color: Palette.teal,
+                            decoration: BoxDecoration(
+                              color: _remoteUid != null
+                                  ? Palette.green
+                                  : Palette.amber,
                               shape: BoxShape.circle,
                             ),
                           ),
                           const SizedBox(width: 6),
-                          const Text(
-                            'LIVE AGORA RTC • ENCRYPTED',
-                            style: TextStyle(
-                              color: Palette.teal,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 0.6,
+                          Flexible(
+                            child: Text(
+                              _connectionStatus,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Palette.teal,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    IconButton(
-                      tooltip: 'Invite Doctor / Contact (WhatsApp & Email)',
-                      onPressed: _openInviteDoctorDialog,
-                      icon: const Icon(Icons.person_add_alt_1_rounded, color: Palette.green, size: 20),
-                    ),
-                    IconButton(
-                      tooltip: 'Copy Invite Link',
-                      onPressed: _copyInvite,
-                      icon: const Icon(Icons.share_rounded, color: Palette.teal, size: 20),
+                    PopupMenuButton<String>(
+                      tooltip: 'Call options',
+                      onSelected: (value) {
+                        switch (value) {
+                          case 'invite':
+                            _openInviteDoctorDialog();
+                            break;
+                          case 'copy':
+                            _copyInvite();
+                            break;
+                          case 'profile':
+                            _openProfilePage();
+                            break;
+                          case 'settings':
+                            _openSettingsPage();
+                            break;
+                        }
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                            value: 'invite', child: Text('Invite a doctor')),
+                        PopupMenuItem(
+                            value: 'copy', child: Text('Copy call link')),
+                        PopupMenuItem(
+                            value: 'profile', child: Text('Open profile')),
+                        PopupMenuItem(
+                            value: 'settings', child: Text('Open settings')),
+                      ],
                     ),
                   ],
                 ),
@@ -316,35 +462,41 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
 
                 // ── Live Vitals Telemetry Overlay Strip ──────────────────────────────
                 GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   color: Palette.surfaceHi.withValues(alpha: 0.85),
                   borderColor: Palette.teal.withValues(alpha: 0.35),
-                  child: Row(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    alignment: WrapAlignment.spaceBetween,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      const Icon(Icons.monitor_heart_rounded, color: Palette.teal, size: 18),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'LIVE TELEMETRY',
-                        style: TextStyle(
-                          color: Palette.teal,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.7,
-                        ),
-                      ),
-                      const Spacer(),
+                      const Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.monitor_heart_rounded,
+                            color: Palette.teal, size: 18),
+                        SizedBox(width: 6),
+                        Text('LIVE TELEMETRY',
+                            style: TextStyle(
+                                color: Palette.teal,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 0.4)),
+                      ]),
                       _VitalChip(
                         icon: Icons.favorite_rounded,
                         color: Palette.red,
-                        label: vitals.heartRate != null ? '${vitals.heartRate} BPM' : '-- BPM',
+                        label: vitals.heartRate != null
+                            ? '${vitals.heartRate} BPM'
+                            : '-- BPM',
                       ),
-                      const SizedBox(width: 10),
                       _VitalChip(
                         icon: Icons.water_drop_rounded,
                         color: Palette.blue,
-                        label: vitals.spo2 != null ? '${vitals.spo2}% SpO₂' : '--% SpO₂',
+                        label: vitals.spo2 != null
+                            ? '${vitals.spo2}% SpO₂'
+                            : '--% SpO₂',
                       ),
-                      const SizedBox(width: 10),
                       _VitalChip(
                         icon: Icons.thermostat_rounded,
                         color: Palette.amber,
@@ -366,12 +518,14 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const CircularProgressIndicator(color: Palette.teal),
+                                const CircularProgressIndicator(
+                                    color: Palette.teal),
                                 const SizedBox(height: 16),
                                 Text(
                                   'Negotiating signed Agora 007 RTC token for "${widget.channelId}"…',
                                   textAlign: TextAlign.center,
-                                  style: const TextStyle(color: Palette.textDim, fontSize: 14),
+                                  style: const TextStyle(
+                                      color: Palette.textDim, fontSize: 14),
                                 ),
                               ],
                             ),
@@ -386,34 +540,43 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
 
                 // ── Bottom Call Controls ─────────────────────────────────────────────
                 GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   color: Palette.surface,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  child: Wrap(
+                    alignment: WrapAlignment.spaceEvenly,
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       _ControlBtn(
-                        icon: _micMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                        icon: _micMuted
+                            ? Icons.mic_off_rounded
+                            : Icons.mic_rounded,
                         label: _micMuted ? 'Unmute' : 'Mute',
                         active: !_micMuted,
-                        onTap: () => setState(() => _micMuted = !_micMuted),
+                        onTap: () => _setMicrophoneMuted(!_micMuted),
                       ),
                       _ControlBtn(
-                        icon: _camOff ? Icons.videocam_off_rounded : Icons.videocam_rounded,
+                        icon: _camOff
+                            ? Icons.videocam_off_rounded
+                            : Icons.videocam_rounded,
                         label: _camOff ? 'Cam Off' : 'Camera',
                         active: !_camOff,
-                        onTap: () => setState(() => _camOff = !_camOff),
+                        onTap: () => _setCameraOff(!_camOff),
                       ),
                       _ControlBtn(
-                        icon: _speakerOn ? Icons.volume_up_rounded : Icons.hearing_rounded,
+                        icon: _speakerOn
+                            ? Icons.volume_up_rounded
+                            : Icons.hearing_rounded,
                         label: _speakerOn ? 'Speaker' : 'Earpiece',
                         active: _speakerOn,
-                        onTap: () => setState(() => _speakerOn = !_speakerOn),
+                        onTap: () => _setSpeakerEnabled(!_speakerOn),
                       ),
                       _ControlBtn(
                         icon: Icons.cameraswitch_rounded,
                         label: _frontCamera ? 'Front' : 'Rear',
                         active: true,
-                        onTap: () => setState(() => _frontCamera = !_frontCamera),
+                        onTap: _switchCamera,
                       ),
                       _ControlBtn(
                         icon: Icons.call_end_rounded,
@@ -433,237 +596,111 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
   }
 
   Widget _buildActiveViewport() {
-    final s = _session!;
-    final appPrefix = s.appId.length > 8 ? '${s.appId.substring(0, 8)}…' : s.appId;
-    final tokenPrefix = s.token.length > 18 ? '${s.token.substring(0, 18)}…' : s.token;
+    final session = _session!;
+    final engine = _engine;
+    final remoteUid = _remoteUid;
 
-    return Stack(
-      children: [
-        // Remote responder / telemedicine feed area
-        GlassCard(
-          padding: const EdgeInsets.all(20),
-          color: const Color(0xFF0D1729),
-          borderColor: Palette.teal.withValues(alpha: 0.35),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              AnimatedBuilder(
-                animation: _pulse,
-                builder: (context, _) {
-                  final t = _pulse.value;
-                  return Container(
-                    width: 108,
-                    height: 108,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Palette.teal.withValues(alpha: 0.10 + 0.10 * t),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Palette.teal.withValues(alpha: 0.22 * t),
-                          blurRadius: 24 + 16 * t,
-                          spreadRadius: 3 * t,
-                        ),
-                      ],
-                    ),
-                    child: Container(
-                      width: 76,
-                      height: 76,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Palette.surfaceHi,
-                        border: Border.all(color: Palette.teal, width: 2),
-                      ),
-                      child: const Icon(
-                        Icons.medical_services_rounded,
-                        color: Palette.teal,
-                        size: 36,
-                      ),
-                    ),
-                  );
-                },
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(20),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (engine != null && remoteUid != null)
+            AgoraVideoView(
+              controller: VideoViewController.remote(
+                rtcEngine: engine,
+                canvas: VideoCanvas(uid: remoteUid),
+                connection: RtcConnection(channelId: session.channelId),
               ),
-              const SizedBox(height: 16),
-              const Text(
-                'Agora Emergency Telemedicine Bridge Ready',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Palette.text,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Timer ${_fmtDuration(_elapsed)} • Waiting for ER Physician / Caregiver on "${s.channelId}"',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Palette.textDim,
-                  fontSize: 13,
-                  fontFeatures: kTabular,
-                ),
-              ),
-              const SizedBox(height: 18),
-
-              // Agora 007 session metadata card
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Palette.surface.withValues(alpha: 0.9),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Palette.outline),
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Agora App ID', style: TextStyle(color: Palette.textDim, fontSize: 12)),
-                        Text(
-                          appPrefix,
-                          style: const TextStyle(
-                            color: Palette.text,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            fontFeatures: kTabular,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Assigned UID & Role', style: TextStyle(color: Palette.textDim, fontSize: 12)),
-                        Text(
-                          '${s.uid} (${s.role.toUpperCase()})',
-                          style: const TextStyle(
-                            color: Palette.text,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            fontFeatures: kTabular,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Signed 007 Token', style: TextStyle(color: Palette.textDim, fontSize: 12)),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.verified_rounded, color: Palette.green, size: 14),
-                            const SizedBox(width: 4),
-                            Text(
-                              tokenPrefix,
-                              style: const TextStyle(
-                                color: Palette.green,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                fontFeatures: kTabular,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 18),
-
-              Row(
+            )
+          else
+            Container(
+              color: const Color(0xFF0D1729),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.all(28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Palette.text,
-                        side: const BorderSide(color: Palette.outline),
-                        padding: const EdgeInsets.symmetric(vertical: 13),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      onPressed: _copyInvite,
-                      icon: const Icon(Icons.copy_rounded, size: 18, color: Palette.teal),
-                      label: const Text('Copy Room Link'),
-                    ),
+                  Icon(
+                    _localJoined
+                        ? Icons.medical_services_rounded
+                        : Icons.wifi_calling_3_rounded,
+                    color: Palette.teal,
+                    size: 54,
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size(0, 48),
-                        backgroundColor: Palette.teal,
-                        foregroundColor: const Color(0xFF042F2A),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      onPressed: _launchExternalRoom,
-                      icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                      label: const Text('Launch WebRTC Room'),
-                    ),
+                  const SizedBox(height: 14),
+                  Text(
+                    _localJoined ? 'You are in the call' : _connectionStatus,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Palette.text,
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 7),
+                  Text(
+                    _rtcError ??
+                        'Waiting for a doctor or caregiver to join room ${session.channelId}.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Palette.textDim, fontSize: 13, height: 1.4),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Call time ${_fmtDuration(_elapsed)}',
+                    style: const TextStyle(
+                        color: Palette.teal,
+                        fontSize: 12,
+                        fontFeatures: kTabular),
                   ),
                 ],
               ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Palette.green,
-                    side: BorderSide(color: Palette.green.withValues(alpha: 0.5)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  ),
-                  onPressed: _openInviteDoctorDialog,
-                  icon: const Icon(Icons.person_add_alt_1_rounded, size: 18, color: Palette.green),
-                  label: const Text('Invite Doctor / Contact (WhatsApp & Email)'),
+            ),
+          if (engine != null)
+            Positioned(
+              top: 14,
+              right: 14,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  width: 112,
+                  height: 154,
+                  color: Palette.surfaceHi,
+                  child: _camOff
+                      ? const Center(
+                          child: Icon(Icons.videocam_off_rounded,
+                              color: Palette.textDim, size: 28))
+                      : AgoraVideoView(
+                          controller: VideoViewController(
+                            rtcEngine: engine,
+                            canvas: VideoCanvas(uid: _localUid ?? 0),
+                          ),
+                        ),
                 ),
               ),
-            ],
-          ),
-        ),
-
-        // Local camera preview PIP card (top-right)
-        Positioned(
-          top: 14,
-          right: 14,
-          child: Container(
-            width: 96,
-            height: 128,
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Palette.surfaceHi.withValues(alpha: 0.92),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: Palette.outline),
             ),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  _camOff ? Icons.videocam_off_rounded : Icons.person_pin_rounded,
-                  color: _camOff ? Palette.textDim : Palette.teal,
-                  size: 32,
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _camOff ? 'Cam Paused' : (_frontCamera ? 'You (Front)' : 'You (Rear)'),
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Palette.text,
+          Positioned(
+            left: 12,
+            bottom: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.72),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                _remoteUid != null
+                    ? 'Connected • ${_fmtDuration(_elapsed)}'
+                    : _connectionStatus,
+                style: const TextStyle(
+                    color: Colors.white,
                     fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (_micMuted) ...[
-                  const SizedBox(height: 4),
-                  const Icon(Icons.mic_off_rounded, color: Palette.red, size: 14),
-                ],
-              ],
+                    fontWeight: FontWeight.w700),
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -681,19 +718,23 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
               color: Palette.amber.withValues(alpha: 0.14),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.videocam_off_rounded, color: Palette.amber, size: 32),
+            child: const Icon(Icons.videocam_off_rounded,
+                color: Palette.amber, size: 32),
           ),
           const SizedBox(height: 14),
           const Text(
             'Agora RTC Token Server Not Configured',
             textAlign: TextAlign.center,
-            style: TextStyle(color: Palette.text, fontSize: 18, fontWeight: FontWeight.w800),
+            style: TextStyle(
+                color: Palette.text, fontSize: 18, fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 8),
           Text(
-            _error ?? 'Set AGORA_APP_ID and AGORA_APP_CERTIFICATE in backend/.env to mint signed 007 RTC tokens.',
+            _error ??
+                'Set AGORA_APP_ID and AGORA_APP_CERTIFICATE in backend/.env to mint signed 007 RTC tokens.',
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Palette.textDim, fontSize: 13, height: 1.4),
+            style: const TextStyle(
+                color: Palette.textDim, fontSize: 13, height: 1.4),
           ),
           const SizedBox(height: 18),
           Row(
@@ -704,10 +745,12 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
                     foregroundColor: Palette.text,
                     side: const BorderSide(color: Palette.outline),
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
                   ),
                   onPressed: _copyInvite,
-                  icon: const Icon(Icons.share_rounded, size: 18, color: Palette.teal),
+                  icon: const Icon(Icons.share_rounded,
+                      size: 18, color: Palette.teal),
                   label: const Text('Copy Room Link'),
                 ),
               ),
@@ -718,7 +761,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
                     minimumSize: const Size(0, 46),
                     backgroundColor: Palette.teal,
                     foregroundColor: const Color(0xFF042F2A),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
                   ),
                   onPressed: _joinChannel,
                   icon: const Icon(Icons.refresh_rounded, size: 18),
@@ -734,7 +778,8 @@ class _VideoCallScreenState extends ConsumerState<VideoCallScreen> with SingleTi
 }
 
 class _VitalChip extends StatelessWidget {
-  const _VitalChip({required this.icon, required this.color, required this.label});
+  const _VitalChip(
+      {required this.icon, required this.color, required this.label});
   final IconData icon;
   final Color color;
   final String label;
@@ -803,7 +848,11 @@ class _ControlBtn extends StatelessWidget {
                 color: bg,
                 shape: BoxShape.circle,
                 border: Border.all(
-                  color: danger ? Palette.red : (active ? Palette.outline : Palette.red.withValues(alpha: 0.45)),
+                  color: danger
+                      ? Palette.red
+                      : (active
+                          ? Palette.outline
+                          : Palette.red.withValues(alpha: 0.45)),
                 ),
               ),
               child: Icon(icon, color: fg, size: 22),

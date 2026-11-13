@@ -1,181 +1,337 @@
-# Jeevan App — Native Android + Real-Time FastAPI + Dual-Transport ESP32
+# Jeevan
 
-Jeevan 2.0 is a ground-up native re-architecture of the JeevanCare wearable health monitoring, emergency SOS, and clinical AI platform. It replaces the legacy browser-polled prototype with a **native Flutter Android application**, a **stateful Python FastAPI backend**, and **dual-transport (BLE + Wi-Fi) ESP32 firmware**.
+## Smart Healthcare and Emergency-Response Platform
 
+Jeevan is an integrated healthcare platform that combines a Flutter Android
+application, ESP32 health devices, a FastAPI backend, AI-assisted clinical
+tools, emergency communication, and secure health-data storage.
+
+The platform is designed to help users monitor vital signs, manage medicines,
+access medical guidance, contact emergency responders, and share important
+health information when it matters most.
+
+> **Important:** Jeevan is a software and hardware project for assistance and
+> monitoring. It is not a replacement for a qualified medical professional or
+> emergency services.
+
+## What Jeevan Provides
+
+- Real-time health monitoring through the JeevanCare VitaWatch
+- Emergency SOS alerts with GPS location and current health data
+- Smart walking-stick support for mobility and safety monitoring
+- AI health assistant with voice and text interaction
+- AI symptom checking, MediScan, medicine analysis, and wellbeing support
+- Drug-interaction checking using OpenFDA data and a curated safety matrix
+- Emergency hospital discovery and traffic-aware routing
+- Live telemedicine and emergency video rooms
+- Medication schedules, wearable reminders, and caregiver notifications
+- Secure Health Vault for documents, prescriptions, scans, and contacts
+- Emergency medical QR profile
+- Blood-bank, donor, NGO, weather, and disaster-risk services
+- Supabase authentication and cloud persistence
+- Offline-capable local BLE monitoring when the wearable is nearby
+
+## System Architecture
+
+```text
+                         JeevanCare VitaWatch
+                    ESP32 + sensors + SOS button
+                         /                  \
+                  BLE GATT                  Wi-Fi
+             low-latency local link             |
+                         \                  /
+                          Flutter Android App
+                              |       |
+                    REST/WebSocket     | SSE
+                              v       v
+                         FastAPI Backend
+                    /        |          \
+              AI/RAG     Emergency       Integrations
+                         services
+                              |
+                         Supabase
+                     Auth + PostgreSQL
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        ESP32 Wearable (JeevanCare)                      │
-│   MAX30102 (HR/SpO2)  •  AD8232 (ECG)  •  DHT11 (Temp)  •  SOS Button   │
-└───────────────┬─────────────────────────────────────────┬───────────────┘
-                │ 1. BLE GATT Notify (~40 ms)             │ 2. HTTP POST (/api/hardware)
-                │    Direct to phone (offline-capable)    │    Single round-trip returns
-                ▼                                         ▼    next_command + reminder
-┌───────────────────────────────┐         ┌───────────────────────────────┐
-│   Flutter Android App         │◄───────►│   FastAPI Server (Python)     │
-│   • BLE + WebSocket Fusion    │  WS     │   • In-Memory Pub/Sub Hub     │
-│   • 60 fps Vitals & ECG Chart │ (<20ms) │   • Server-Driven Sensor Loop │
-│   • Native SOS Alarm & GPS    │         │   • Local ONNX Hybrid RAG     │
-│   • Streaming AI Assistant    │  SSE    │   • Throttled DB Persistence  │
-└───────────────────────────────┘         └───────────────┬───────────────┘
-                                                          │ Async Batch (30s)
-                                                          ▼
-                                          ┌───────────────────────────────┐
-                                          │   Supabase (Auth + Postgres)  │
-                                          │   + Brevo (SMS / Email SOS)   │
-                                          └───────────────────────────────┘
-```
 
----
+### Main Components
 
-## 1. Why Latency Dropped from 3–6 Seconds to <40 ms
+| Component | Purpose |
+| --- | --- |
+| `mobile/` | Flutter Android application |
+| `server/` | Python FastAPI API and real-time services |
+| `firmware/` | ESP32 VitaWatch firmware |
+| `supabase/` | Database schema and migrations |
+| `server/app/rag/knowledge/` | Local first-aid and health knowledge |
 
-The legacy web stack suffered from **3,000–6,000 ms end-to-end latency** and frequent sensor stalls because every reading had to traverse multiple serverless hops and database polls:
-1. ESP32 made **3 separate TLS handshakes per loop** (`POST /hardware`, `GET /next-command`, `GET /reminder`), blocking the single-core sensor loop for 1.5–2.5 seconds per cycle.
-2. Each serverless handler cold-started, wrote synchronously to `device_live_stream` in Postgres, and waited for Supabase Realtime CDC or client polling.
-3. The browser controlled sensor switching via `setInterval` timers—when the mobile browser tab backgrounded or throttled, sensor rotation froze entirely.
+## Feature Details
 
-### How Jeevan 2.0 Achieves Sub-40 ms Real-Time Telemetry
+### 1. VitaWatch Health Monitoring
 
-| Path | End-to-End Latency | How It Works |
-| :--- | :--- | :--- |
-| **Path A: Direct BLE GATT** | **~40 ms** | When the phone is near the wearable, the ESP32 streams compact JSON frames (`{"hr":78,"spo2":98,"ecg":512,...}`) over BLE GATT Characteristic `beb5483e-36e1-4688-b7f5-ea07361b26a8` at 20 Hz. The Flutter app renders vitals and ECG waveforms directly—even with **zero internet connectivity**. Hardware SOS (`{"sos":true}`) triggers the phone's emergency countdown in under 50 ms. |
-| **Path B: FastAPI In-Memory WebSocket Hub** | **<20 ms** | When operating over Wi-Fi or viewed remotely by a caregiver, `POST /api/hardware` validates the reading in RAM and immediately fans it out to subscribed WebSocket clients (`/ws/vitals`) via an in-memory `asyncio.Queue` pub/sub hub **before** any database I/O occurs. |
-| **Single Round-Trip Piggybacking** | **3× fewer HTTP calls** | `POST /api/hardware` now returns `{"ok": true, "next_command": "read_max30102", "reminder": {...}}` in a single HTTP response. The ESP32 no longer polls `/next-command` or `/reminder` separately. |
-| **Server-Driven Sensor Rotation** | **0 background stalls** | Sensor rotation (`read_max30102:15s → read_dht11:4s → read_ad8232:6s`) and manual sensor pinning are managed by an authoritative state machine in the FastAPI server (`DeviceHub`), never by client-side UI timers. |
-| **Throttled Background Persistence** | **0 ms hot-path DB wait** | Postgres writes (`vital_readings`) are decoupled from the live telemetry path and flushed asynchronously once every `PERSIST_INTERVAL_S=30` seconds (or immediately on anomaly/SOS). |
+The ESP32 VitaWatch can collect and stream:
 
----
+- Heart rate
+- Blood oxygen saturation (SpO2)
+- Body temperature
+- Single-lead ECG waveform
+- GPS location
+- SOS button events
+- Medicine-reminder acknowledgements
 
-## 2. Complete API Keys & Services (100% Jeevan Website Parity)
+It supports both Bluetooth Low Energy and Wi-Fi. BLE allows the app to display
+near-real-time readings without requiring internet access.
 
-All external keys live **exclusively on the FastAPI server** (`jeevan app/server/.env`). The Flutter Android app only needs the FastAPI server URL and public Supabase project URL/anon key.
+Hardware details and wiring are documented in
+[firmware/jeevancare_ble/README.md](firmware/jeevancare_ble/README.md).
 
-| Service / Component | Model / Provider | API Key Env Var | Purpose & Why It Was Chosen |
-| :--- | :--- | :--- | :--- |
-| **Primary Streaming Medical LLM** | Google Gemini **`gemini-2.5-flash`** | `GEMINI_API_KEY`, `GEMINI_MODEL` | Ultra-low time-to-first-token (TTFT ~250 ms) over SSE (`/api/assistant/chat`), plus AI Symptom Checker, MediScan Lab Analyzer, Medicine Ingredients, and Mental Wellbeing (`/api/gemini/*`). |
-| **Multi-LLM Automatic Failover** | OpenAI **`gpt-4o-mini`** & HuggingFace **`Mistral-7B-Instruct-v0.3`** | `OPENAI_API_KEY`, `HUGGINGFACE_API_KEY` | Automatic zero-downtime fallback if Gemini is rate-limited or unreachable, followed by local extractive RAG fallback. |
-| **Dense Embeddings (Hybrid RAG)** | **`BAAI/bge-small-en-v1.5`** (ONNX via `fastembed`) | *None (100% Local)* | Runs locally in Python CPU memory (~12 ms/query). Eliminates external embedding API latency, rate limits, and per-token costs. |
-| **Cross-Encoder Reranker (RAG)** | **`Xenova/ms-marco-MiniLM-L-6-v2`** (ONNX) | *None (100% Local)* | Locally reranks Reciprocal-Rank-Fused (RRF) Dense + BM25 medical passages in ~25 ms before streaming context to the LLM. |
-| **Emergency Routing & Hospitals** | **TomTom** Search, Routing & Traffic APIs | `TOMTOM_API_KEY` | Powers nearby hospital/clinic discovery (`/api/emergency-route/facilities`), traffic-aware ambulance ETA & polyline (`/route`), live road speed (`/traffic-flow`), and road hazards (`/traffic-incidents`). |
-| **Live Emergency Video Telehealth** | **Agora RTC** (`007` AccessToken2 HMAC-SHA256) | `AGORA_APP_ID`, `AGORA_APP_CERTIFICATE` | Pure-Python cryptographic `007` RTC token builder (`/api/rtc/create-channel`, `/api/rtc/public-token`) for instant 1-tap emergency doctor/responder video rooms. |
-| **Weather Radar & Disaster Risk** | **OpenWeatherMap** Weather & Radar Tiles | `OPENWEATHER_KEY` | Powers live precipitation radar tiles (`/api/weather/radar`) and composite Flood / Fire / Earthquake disaster risk scoring (`/api/risk-score`). |
-| **Drug Interaction Verification** | **OpenFDA** Drug Label API + Curated Matrix | *Public API + Built-in* | Checks drug-drug contraindications and bleeding/hypotension risks (`/api/fda/interactions`). |
-| **Auth & Database** | **Supabase** (Auth + Postgres) | `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` | Verifies user JWTs locally in FastAPI (<1 ms) and stores user profiles, `device_pairings`, `vital_readings`, `sos_events`, `emergency_summaries`, and `medications`. |
-| **Hardware Auth (Watch + Stick)** | Shared Secret | `DEVICE_API_KEY` | Authenticates both ESP32 #1 (**VitaWatch**) and ESP32 #2 (**Smart Walking Stick**) HTTP requests (`X-Device-Key` / `api_key`). |
-| **Multi-Channel SOS Dispatch** | **Brevo** (Email + SMS + WhatsApp) | `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BREVO_SMS_SENDER`, `BREVO_WHATSAPP_*` | Dispatches live Google Maps GPS links, telehealth video room links, and vitals via Email, Transactional SMS, and WhatsApp template messages on SOS. |
+### 2. Emergency SOS
 
----
+An SOS can be triggered from the mobile app or the physical wearable button.
+The workflow can:
 
-## 2B. Complete Feature & Endpoint Matrix
+1. Start a safety countdown.
+2. Capture the user's location.
+3. Collect the latest available vitals.
+4. Notify configured emergency contacts.
+5. Share a Google Maps location link.
+6. Provide an emergency video-room link.
+7. Continue sending location updates when a GPS fix becomes available.
 
-| Domain | Endpoints | Mobile Screen |
-| :--- | :--- | :--- |
-| **VitaWatch ESP32 #1 (BLE + Wi-Fi)** | `POST /api/device/{live-stream,ingest,status,sos,sos/location,reminders/acknowledge}`, `GET /api/device/command`, `WS /ws/live` | `DashboardScreen`, `DevicesScreen`, `SosActiveScreen` |
-| **Smart Walking Stick ESP32 #2 & Geofence** | `POST /api/stick/{telemetry,event,location,sync-watch,geofence,simulate}`, `GET /api/stick/{status,events,geofence}` | `WalkingStickScreen` |
-| **Hybrid Transformer RAG Assistant** | `POST /api/assistant/chat` (SSE), `GET/POST/DELETE /api/assistant/documents` | `AssistantScreen` |
-| **AI Clinical Suite & OpenFDA** | `POST /api/gemini/{symptom-check,mediscan,medicine-ingredients,wellbeing}`, `GET /api/fda/interactions` | `ClinicalToolsScreen` |
-| **TomTom Emergency Map & Traffic** | `POST /api/emergency-route/{facilities,route,traffic-flow,traffic-incidents}` | `CareMapScreen` |
-| **Agora Live Telehealth Video** | `POST /api/rtc/create-channel`, `GET /api/rtc/public-token` | `VideoCallScreen` |
-| **Medications & Watch LED Reminders** | `GET/POST/DELETE /api/medications`, `POST /api/devices/{id}/reminder` | `MedicationsScreen` |
-| **Weather Radar, Blood Bank, NGOs, ABDM/ABHA & QR Medical ID** | `GET /api/weather/radar`, `GET /api/risk-score`, `GET/POST /api/blood-bank/*`, `GET/POST /api/ngo/*`, `POST /api/abdm/{generate-otp,verify-otp}`, `GET/PUT /api/emergency-summary` | `CommunityDisasterScreen`, `ServicesHubScreen` |
+Notifications can use in-app alerts, email, SMS, and WhatsApp when the
+corresponding services are configured.
 
----
+### 3. Smart Walking Stick
 
-## 3. Step-by-Step Quickstart Guide
+The second ESP32 device supports:
 
-### Step 1: Run the Supabase Migration
+- Fall and emergency-event detection
+- Location tracking
+- Geofencing
+- Radar-zone status
+- Event history
+- Synchronization with VitaWatch
+- Hardware-free simulation for development and demonstrations
 
-Apply the device pairing and telemetry schema migration in your Supabase SQL Editor:
+### 4. AI Health Assistant
 
-1. Open your [Supabase Dashboard](https://supabase.com/dashboard) → **SQL Editor**.
-2. Paste and execute [`supabase/008_device_pairings.sql`](../supabase/008_device_pairings.sql).
-3. This creates the `public.device_pairings` table (mapping `device_id` such as `ESP32_001` to `user_id` with RLS policies) and indexes for fast vitals/SOS queries.
+The assistant accepts text or voice questions and provides streaming,
+knowledge-grounded responses. It can use:
 
----
+- Curated local health and first-aid knowledge
+- Hybrid keyword and dense retrieval
+- Local ONNX embeddings and reranking
+- Configured external language models
+- User-provided private documents
+- Relevant live-vitals context
 
-### Step 2: Configure & Run the FastAPI Server
+External AI services have fallback paths so the application can continue to
+provide local or curated responses when an integration is unavailable.
 
-Open a terminal in `jeevan app/server`:
+### 5. Clinical AI Tools
+
+The clinical tools include:
+
+- Symptom checker and risk-oriented triage
+- Laboratory-report analysis
+- Diagnostic-image assistance
+- Medicine ingredient and usage explanations
+- Drug-interaction checking
+- Mental wellbeing and guided-support features
+- AI-generated vitals and clinical-history summaries
+
+These features provide assistance and explanations; they do not make a
+clinical diagnosis.
+
+### 6. Emergency Map and Telemedicine
+
+Jeevan can help users find nearby hospitals and clinics, calculate routes,
+display traffic conditions, identify road incidents, and estimate emergency
+travel time.
+
+The telemedicine module provides live Agora video rooms with microphone,
+camera, speaker, camera-switching, and invite-link controls.
+
+### 7. Medication Management
+
+Users can:
+
+- Add and remove medicines
+- Configure medication schedules
+- Receive reminders
+- Acknowledge doses on the wearable
+- Trigger the VitaWatch reminder LED
+- Ask the AI pharmacist about missed doses
+- Notify a caregiver through WhatsApp
+
+### 8. Health Vault and Emergency QR
+
+The Health Vault stores health documents, prescriptions, scans, alerts,
+symptom-check history, emergency contacts, and profile details.
+
+The emergency QR profile can display selected information such as:
+
+- Patient name
+- Blood group
+- Allergies
+- Medical conditions
+- Current medicines
+- Emergency contacts
+
+### 9. Community and Disaster Services
+
+The community module includes:
+
+- Blood-bank search
+- Donor registration
+- Verified NGO discovery and contact
+- Community alerts
+- Weather and precipitation radar
+- Flood, fire, and earthquake risk scoring
+- ABDM/ABHA OTP-based identity workflows
+
+## Technology Stack
+
+| Area | Technologies |
+| --- | --- |
+| Mobile | Flutter, Dart, Riverpod |
+| Backend | Python, FastAPI, REST, WebSockets, Server-Sent Events |
+| Hardware | ESP32, BLE, Wi-Fi, GPS |
+| Sensors | MAX30102, MAX30205, AD8232 ECG, DHT11 |
+| Authentication and database | Supabase Auth and PostgreSQL |
+| AI | Gemini, OpenAI, Hugging Face, ONNX, Hybrid RAG |
+| Maps and traffic | TomTom APIs |
+| Video | Agora RTC |
+| Notifications | Brevo Email, SMS, and WhatsApp |
+
+## Repository Setup
+
+### Prerequisites
+
+- Flutter SDK 3.22 or newer
+- Dart SDK 3.4 or newer
+- Python 3.10 or newer
+- An Android device or emulator
+- Arduino IDE and ESP32 board support for hardware development
+- Supabase project for authentication and persistence
+
+### 1. Configure the Backend
 
 ```powershell
-cd "jeevan app/server"
-
-# 1. Create and activate a virtual environment
+cd "server"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
-# 2. Install dependencies (FastAPI, Uvicorn, FastEmbed ONNX, httpx, PyJWT)
 pip install -r requirements.txt
-
-# 3. Create your environment file
 Copy-Item .env.example .env
 ```
 
-Edit `jeevan app/server/.env` and fill in your credentials:
-- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`
-- `DEVICE_API_KEY` (must match the key flashed to your ESP32 or simulator)
-- `GEMINI_API_KEY` (from Google AI Studio)
-- `BREVO_API_KEY` and `BREVO_FROM_EMAIL` (optional for local testing; required for live SMS/email SOS dispatch)
+Add the required values to `server/.env`. Common settings include:
 
-Start the server bound to all interfaces (`0.0.0.0`) so your Android phone and ESP32 on the same Wi-Fi LAN can reach it:
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_JWT_SECRET`
+- `DEVICE_API_KEY`
+- `GEMINI_API_KEY`
+- Optional routing, video, weather, and notification keys
+
+Start the API from the repository root:
 
 ```powershell
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --app-dir server --host 0.0.0.0 --port 8000 --reload
 ```
 
-Verify the server is healthy:
-- Health check: `http://localhost:8000/healthz`
-- Find your PC's LAN IP via `ipconfig` (e.g., `192.168.1.42`).
+The API health endpoint is:
 
----
+```text
+http://localhost:8000/health
+```
 
-### Step 3: Flash the ESP32 BLE + Wi-Fi Firmware
+### 2. Apply the Database Schema
 
-1. Open [`firmware/jeevancare_ble/jeevancare_ble.ino`](firmware/jeevancare_ble/jeevancare_ble.ino) in **Arduino IDE** (with ESP32 board package installed).
-2. Install required libraries via Arduino Library Manager:
-   - `ArduinoJson` (by Benoit Blanchon)
-   - `Adafruit GFX Library` & `Adafruit SSD1306`
-   - `SparkFun MAX3010x Pulse and Proximity Sensor Library`
-   - `DHT sensor library` (by Adafruit)
-3. Update the configuration constants at the top of `jeevancare_ble.ino`:
-   - `WIFI_SSID` / `WIFI_PASS`: Your 2.4 GHz Wi-Fi credentials (or configure dynamically over BLE from the Flutter app!).
-   - `SERVER_URL`: `http://<YOUR_PC_LAN_IP>:8000/api/hardware`
-   - `API_KEY`: Must match `DEVICE_API_KEY` in `server/.env`
-   - `DEVICE_ID`: `"ESP32_001"`
-4. Select **Partition Scheme → Huge APP (3MB No OTA / 1MB SPIFFS)** (required when combining `BLEDevice` + `WiFi` stacks on ESP32) and click **Upload**.
+Run the SQL files in the Supabase SQL Editor in the required migration order.
+The main schema is [supabase/supabase_schema.sql](supabase/supabase_schema.sql).
+Additional device and table migrations are available in
+[supabase/008_device_pairings.sql](supabase/008_device_pairings.sql) and
+[supabase/009_missing_tables.sql](supabase/009_missing_tables.sql).
 
-> **No Hardware Handy?** You can simulate a live wearable right from your PC:
-> ```powershell
-> node ../esp32-simulator.mjs
-> ```
-
----
-
-### Step 4: Build & Run the Flutter Android App
-
-Open a terminal in `jeevan app/mobile`:
+### 3. Run the Flutter Application
 
 ```powershell
-cd "jeevan app/mobile"
-
-# 1. Fetch Flutter packages
+cd "mobile"
 flutter pub get
-
-# 2. Verify your connected Android phone or emulator
 flutter devices
-
-# 3. Run the app with your FastAPI server LAN IP and Supabase credentials
 flutter run `
-  --dart-define=API_BASE_URL=http://192.168.1.42:8000 `
-  --dart-define=WS_BASE_URL=ws://192.168.1.42:8000 `
+  --dart-define=API_BASE_URL=http://10.0.2.2:8000 `
+  --dart-define=WS_BASE_URL=ws://10.0.2.2:8000 `
   --dart-define=SUPABASE_URL=https://your-project.supabase.co `
   --dart-define=SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 
-*(Note: Replace `192.168.1.42` with your computer's LAN IP address, or use `10.0.2.2` if running inside the Android Emulator.)*
+Use the computer's LAN IP instead of `10.0.2.2` when testing from a physical
+Android phone. The phone and computer must be on the same network.
 
-#### Testing the Full Loop on Your Android Device
-1. **Sign In & Pair**: Sign in with your Supabase account, open the **Hardware** tab, and pair `ESP32_001` (via BLE scan for `JeevanCare-ESP32` or by Device ID).
-2. **Verify Sub-40 ms Telemetry**: Watch the **Monitor** tab badge switch to **`BLE LIVE`** (when near the wearable) or **`CLOUD LIVE`** (over WebSocket). Pin individual sensors (`HR/SpO₂`, `ECG`, `Temp`) or leave on **Auto Rotate**.
-3. **Test Emergency SOS**: Press the physical SOS button on the ESP32 (or hold the in-app **SOS** button). The 10-second native haptic/audio countdown launches immediately—even over the Android lock screen—before dispatching GPS + vitals to your emergency contacts.
-4. **Ask Jeevan AI**: Open the **Assistant** tab, tap the microphone or type a symptom question, and watch grounded clinical guidance stream token-by-token with cited knowledge cards and personalized live vitals context.
+The mobile package configuration is documented in
+[mobile/pubspec.yaml](mobile/pubspec.yaml).
+
+### 4. Flash the VitaWatch Firmware
+
+1. Open [firmware/jeevancare_ble/jeevancare_ble.ino](firmware/jeevancare_ble/jeevancare_ble.ino)
+   in Arduino IDE.
+2. Install the ESP32 board package and the libraries listed in the firmware
+   README.
+3. Configure Wi-Fi, backend URL, device ID, and device API key.
+4. Select the ESP32 Dev Module board.
+5. Select the `Huge APP (3MB No OTA/1MB SPIFFS)` partition scheme.
+6. Compile and upload the firmware.
+
+Never commit real API keys, passwords, Wi-Fi credentials, or service-role
+tokens. Keep them in local `.env` files or secure deployment secrets.
+
+## API Domains
+
+The FastAPI backend is organized around these domains:
+
+- Authentication, profiles, and device pairing
+- Live device telemetry and commands
+- SOS events and location updates
+- AI assistant and private documents
+- Clinical AI tools
+- Health Vault records
+- Medication schedules and reminders
+- Walking-stick telemetry and geofencing
+- Emergency facilities, routing, and traffic
+- Weather and disaster risk
+- Blood banks, donors, NGOs, and ABHA workflows
+- Agora telemedicine rooms
+
+The API implementation is in
+[server/app/main.py](server/app/main.py) and
+[server/app/routers/](server/app/routers/).
+
+## Testing
+
+Backend tests are located in [server/tests/](server/tests/).
+
+```powershell
+cd "server"
+pytest
+```
+
+For Flutter static analysis:
+
+```powershell
+cd "mobile"
+flutter analyze
+```
+
+## Project Impact
+
+Jeevan brings monitoring, emergency response, medical information, and
+caregiver communication into a single ecosystem. Its combination of direct
+wearable connectivity, real-time backend services, AI assistance, and
+emergency integrations makes it suitable for demonstrations and future
+healthcare-service development.
+
+## License
+
+No license has been specified yet. Add a license before distributing the
+project publicly or accepting external contributions.

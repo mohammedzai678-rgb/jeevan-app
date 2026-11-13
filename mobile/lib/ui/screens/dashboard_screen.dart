@@ -39,8 +39,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     setState(() => _loadingCounts = true);
     try {
       final api = ref.read(apiProvider);
-      final docsFuture = api.healthVaultDocuments().catchError((_) => <Map<String, dynamic>>[]);
-      final alertsFuture = api.healthVaultAlerts().catchError((_) => <Map<String, dynamic>>[]);
+      final docsFuture = api
+          .healthVaultDocuments()
+          .catchError((_) => <Map<String, dynamic>>[]);
+      final alertsFuture =
+          api.healthVaultAlerts().catchError((_) => <Map<String, dynamic>>[]);
       final results = await Future.wait([docsFuture, alertsFuture]);
       if (mounted) {
         setState(() {
@@ -61,7 +64,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     return 'Good evening';
   }
 
-  void _go(String route, {int subTab = 0}) => widget.onNavigate?.call(route, subTab: subTab);
+  void _go(String route, {int subTab = 0}) =>
+      widget.onNavigate?.call(route, subTab: subTab);
 
   @override
   Widget build(BuildContext context) {
@@ -70,7 +74,9 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final session = ref.watch(sessionProvider).valueOrNull;
 
     final displayName = session?.email != null && session!.email!.isNotEmpty
-        ? (store.patientName != 'User' ? store.patientName : session.email!.split('@').first)
+        ? (store.patientName != 'User'
+            ? store.patientName
+            : session.email!.split('@').first)
         : store.patientName;
 
     return RefreshIndicator(
@@ -101,7 +107,10 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
           const SizedBox(height: 2),
           Text(
             dateStr,
-            style: const TextStyle(color: Palette.textMuted, fontSize: 13, fontWeight: FontWeight.w500),
+            style: const TextStyle(
+                color: Palette.textMuted,
+                fontSize: 13,
+                fontWeight: FontWeight.w500),
           ),
           const SizedBox(height: 20),
 
@@ -110,12 +119,27 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             hero: true,
             patientName: displayName,
             bloodGroup: store.bloodGroup,
-            allergies: store.allergies.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty && e != 'None reported').toList(),
-            conditions: store.conditions.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty && e != 'None reported').toList(),
-            medications: store.medications.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty && e != 'None').toList(),
+            dob: store.dateOfBirth,
+            allergies: store.allergies
+                .split(',')
+                .map((e) => e.trim())
+                .where((e) => e.isNotEmpty && e != 'None reported')
+                .toList(),
+            conditions: store.conditions
+                .split(',')
+                .map((e) => e.trim())
+                .where((e) => e.isNotEmpty && e != 'None reported')
+                .toList(),
+            medications: store.medications
+                .split(',')
+                .map((e) => e.trim())
+                .where((e) => e.isNotEmpty && e != 'None')
+                .toList(),
             emergencyContactName: store.contactName,
             emergencyContactRelation: store.contactRelation,
             emergencyContactPhone: store.contactPhone,
+            emergencyContacts: store.emergencyContacts,
+            showEmergencyContacts: store.showEmergencyContactsOnQr,
           ),
           const SizedBox(height: 28),
 
@@ -127,7 +151,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             physics: const NeverScrollableScrollPhysics(),
             mainAxisSpacing: 12,
             crossAxisSpacing: 12,
-            childAspectRatio: 1.5,
+            childAspectRatio: 1.3,
             children: [
               _StatTile(
                 icon: Icons.groups_rounded,
@@ -316,7 +340,8 @@ class _ActionRow extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                    style:
+                        const TextStyle(color: Palette.textDim, fontSize: 12.5),
                   ),
                 ],
               ),

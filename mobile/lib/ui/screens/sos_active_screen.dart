@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,9 +8,12 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/config.dart';
 import '../../core/theme.dart';
+import '../../data/models.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
 import '../widgets/emergency_qr_card.dart';
+import '../widgets/map_gesture_layer.dart';
+import '../widgets/map_tile_image.dart';
 import 'video_call_screen.dart';
 
 /// Emergency SOS screen matching website `SOSPage.tsx` & `SOSFab.tsx`.
@@ -39,6 +43,12 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
   Timer? _clock;
   Duration _elapsed = Duration.zero;
   String _selectedPoiCategory = 'all';
+  double? _sosMapCenterLat;
+  double? _sosMapCenterLng;
+  int _sosMapZoom = 13;
+  bool _loadingNearbyFacilities = false;
+  String? _nearbyLocationKey;
+  List<CareFacility> _nearbyFacilities = const [];
 
   static const double _sosSize = 172;
 
@@ -48,99 +58,42 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     String label,
     Color color,
   })>[
-    (icon: Icons.local_hospital_rounded, number: '112', label: 'Ambulance', color: Palette.red),
-    (icon: Icons.local_police_rounded, number: '100', label: 'Police', color: Palette.blue),
-    (icon: Icons.local_fire_department_rounded, number: '101', label: 'Fire', color: Palette.orange),
-    (icon: Icons.shield_rounded, number: '1091', label: 'Women', color: Palette.purple),
-    (icon: Icons.emergency_rounded, number: '108', label: 'Disaster', color: Palette.teal),
+    (
+      icon: Icons.local_hospital_rounded,
+      number: '112',
+      label: 'Ambulance',
+      color: Palette.red
+    ),
+    (
+      icon: Icons.local_police_rounded,
+      number: '100',
+      label: 'Police',
+      color: Palette.blue
+    ),
+    (
+      icon: Icons.local_fire_department_rounded,
+      number: '101',
+      label: 'Fire',
+      color: Palette.orange
+    ),
+    (
+      icon: Icons.shield_rounded,
+      number: '1091',
+      label: 'Women',
+      color: Palette.purple
+    ),
+    (
+      icon: Icons.emergency_rounded,
+      number: '108',
+      label: 'Disaster',
+      color: Palette.teal
+    ),
   ];
 
   static const _poiFilters = <({String id, String label})>[
-    (id: 'all', label: 'All'),
-    (id: 'hospital', label: 'Hospital'),
-    (id: 'police', label: 'Police'),
-    (id: 'food', label: 'Food'),
-    (id: 'washroom', label: 'Washroom'),
-    (id: 'shelter', label: 'Shelter'),
-  ];
-
-  static const _nearbyPois = <({
-    String name,
-    String category,
-    String type,
-    IconData icon,
-    String distance,
-    String phone,
-    double lat,
-    double lng,
-    Color color,
-  })>[
-    (
-      name: 'Victoria Hospital',
-      category: 'hospital',
-      type: 'Hospital',
-      icon: Icons.local_hospital_rounded,
-      distance: '0.8 km',
-      phone: '108',
-      lat: 12.9635,
-      lng: 77.5749,
-      color: Palette.red,
-    ),
-    (
-      name: 'Bowring Hospital',
-      category: 'hospital',
-      type: 'Hospital',
-      icon: Icons.local_hospital_rounded,
-      distance: '1.4 km',
-      phone: '112',
-      lat: 12.9822,
-      lng: 77.6041,
-      color: Palette.red,
-    ),
-    (
-      name: 'Cubbon Park Police',
-      category: 'police',
-      type: 'Police',
-      icon: Icons.local_police_rounded,
-      distance: '0.9 km',
-      phone: '100',
-      lat: 12.9763,
-      lng: 77.5929,
-      color: Palette.blue,
-    ),
-    (
-      name: 'Indira Canteen',
-      category: 'food',
-      type: 'Food',
-      icon: Icons.restaurant_rounded,
-      distance: '1.1 km',
-      phone: '1912',
-      lat: 12.9701,
-      lng: 77.5992,
-      color: Palette.orange,
-    ),
-    (
-      name: 'MG Road Washroom',
-      category: 'washroom',
-      type: 'Washroom',
-      icon: Icons.wc_rounded,
-      distance: '0.5 km',
-      phone: '1533',
-      lat: 12.9756,
-      lng: 77.6066,
-      color: Palette.teal,
-    ),
-    (
-      name: 'BBMP Night Shelter',
-      category: 'shelter',
-      type: 'Shelter',
-      icon: Icons.night_shelter_rounded,
-      distance: '1.6 km',
-      phone: '108',
-      lat: 12.9638,
-      lng: 77.5855,
-      color: Palette.purple,
-    ),
+    (id: 'all', label: 'All nearby'),
+    (id: 'hospital', label: 'Hospitals & clinics'),
+    (id: 'emergency', label: 'Emergency care'),
   ];
 
   @override
@@ -164,6 +117,45 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     setState(() => _elapsed = diff.isNegative ? Duration.zero : diff);
   }
 
+  Future<void> _loadNearbyFacilities(double lat, double lng) async {
+    if (!mounted) return;
+    setState(() => _loadingNearbyFacilities = true);
+    try {
+      final facilities = await ref
+          .read(apiProvider)
+          .nearbyFacilities(lat, lng, radius: 5000)
+          .timeout(const Duration(seconds: 5));
+      if (!mounted) return;
+      setState(() {
+        _nearbyFacilities = facilities.take(8).toList();
+        _loadingNearbyFacilities = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _nearbyFacilities = const [];
+        _loadingNearbyFacilities = false;
+      });
+    }
+  }
+
+  bool _isEmergencyFacility(CareFacility facility) =>
+      facility.emergency ||
+      facility.type.toLowerCase().contains('emergency') ||
+      facility.name.toLowerCase().contains('emergency');
+
+  List<CareFacility> _filteredFacilities() {
+    if (_selectedPoiCategory == 'emergency') {
+      return _nearbyFacilities.where(_isEmergencyFacility).toList();
+    }
+    if (_selectedPoiCategory == 'hospital') {
+      return _nearbyFacilities
+          .where((facility) => !_isEmergencyFacility(facility))
+          .toList();
+    }
+    return _nearbyFacilities;
+  }
+
   @override
   void dispose() {
     _clock?.cancel();
@@ -181,47 +173,77 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
   String _cleanDigits(String phone) {
     final digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
     if (digits.length == 10) return '91$digits';
-    return digits.isEmpty ? '919876543210' : digits;
+    return digits;
   }
 
   Future<void> _dial(String number) async {
     final uri = Uri(scheme: 'tel', path: number.replaceAll(' ', ''));
     if (!await launchUrl(uri)) {
-      if (mounted) showSnack(context, 'Could not launch dialer for $number', error: true);
+      if (mounted)
+        showSnack(context, 'Could not launch dialer for $number', error: true);
     }
   }
 
-  Future<void> _openWhatsAppWithSos(SosContactInfo contact, double lat, double lng) async {
-    final msg = ref.read(sosProvider.notifier).formatSosMessage(lat: lat, lng: lng);
+  Future<void> _openWhatsAppWithSos(
+      SosContactInfo contact, double lat, double lng) async {
+    final msg = ref.read(sosProvider.notifier).formatSosMessage(
+        lat: lat == 0 && lng == 0 ? null : lat,
+        lng: lat == 0 && lng == 0 ? null : lng);
     final encoded = Uri.encodeComponent(msg);
     final digits = _cleanDigits(contact.phone);
+    if (digits.isEmpty) {
+      if (mounted)
+        showSnack(context, 'Add a phone number for this contact first.');
+      return;
+    }
     final uri = Uri.parse('https://wa.me/$digits?text=$encoded');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (mounted) showSnack(context, 'Could not open WhatsApp.', error: true);
     }
   }
 
-  Future<void> _openSmsWithSos(SosContactInfo contact, double lat, double lng) async {
-    final msg = ref.read(sosProvider.notifier).formatSosMessage(lat: lat, lng: lng);
+  Future<void> _openSmsWithSos(
+      SosContactInfo contact, double lat, double lng) async {
+    final msg = ref.read(sosProvider.notifier).formatSosMessage(
+        lat: lat == 0 && lng == 0 ? null : lat,
+        lng: lat == 0 && lng == 0 ? null : lng);
     final cleanPhone = contact.phone.replaceAll(' ', '');
+    if (cleanPhone.trim().isEmpty) {
+      if (mounted)
+        showSnack(context, 'Add a phone number for this contact first.');
+      return;
+    }
     final uri = Uri.parse('sms:$cleanPhone?body=${Uri.encodeComponent(msg)}');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (mounted) showSnack(context, 'Could not open SMS app.', error: true);
     }
   }
 
-  Future<void> _openEmailWithSos(SosContactInfo contact, double lat, double lng) async {
-    final msg = ref.read(sosProvider.notifier).formatSosMessage(lat: lat, lng: lng);
-    final subject = Uri.encodeComponent('🚨 EMERGENCY SOS Alert — JeevanCare (Agora Video Call Link Inside)');
+  Future<void> _openEmailWithSos(
+      SosContactInfo contact, double lat, double lng) async {
+    if (contact.email.trim().isEmpty) {
+      if (mounted)
+        showSnack(context, 'Add an email address for this contact first.');
+      return;
+    }
+    final msg = ref.read(sosProvider.notifier).formatSosMessage(
+        lat: lat == 0 && lng == 0 ? null : lat,
+        lng: lat == 0 && lng == 0 ? null : lng);
+    final subject = Uri.encodeComponent(
+        '🚨 EMERGENCY SOS Alert — JeevanCare (Agora Video Call Link Inside)');
     final body = Uri.encodeComponent(msg);
-    final uri = Uri.parse('mailto:${contact.email}?subject=$subject&body=$body');
+    final uri =
+        Uri.parse('mailto:${contact.email}?subject=$subject&body=$body');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
       if (mounted) showSnack(context, 'Could not open Email app.', error: true);
     }
   }
 
-  Future<void> _openWhatsAppWithSafe(SosContactInfo contact, double lat, double lng) async {
-    final msg = ref.read(sosProvider.notifier).formatSafeMessage(lat: lat, lng: lng);
+  Future<void> _openWhatsAppWithSafe(
+      SosContactInfo contact, double lat, double lng) async {
+    final msg = ref.read(sosProvider.notifier).formatSafeMessage(
+        lat: lat == 0 && lng == 0 ? null : lat,
+        lng: lat == 0 && lng == 0 ? null : lng);
     final encoded = Uri.encodeComponent(msg);
     final digits = _cleanDigits(contact.phone);
     final uri = Uri.parse('https://wa.me/$digits?text=$encoded');
@@ -230,8 +252,11 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     }
   }
 
-  Future<void> _openSmsWithSafe(SosContactInfo contact, double lat, double lng) async {
-    final msg = ref.read(sosProvider.notifier).formatSafeMessage(lat: lat, lng: lng);
+  Future<void> _openSmsWithSafe(
+      SosContactInfo contact, double lat, double lng) async {
+    final msg = ref.read(sosProvider.notifier).formatSafeMessage(
+        lat: lat == 0 && lng == 0 ? null : lat,
+        lng: lat == 0 && lng == 0 ? null : lng);
     final cleanPhone = contact.phone.replaceAll(' ', '');
     final uri = Uri.parse('sms:$cleanPhone?body=${Uri.encodeComponent(msg)}');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
@@ -242,7 +267,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
   Future<void> _openMaps(double lat, double lng) async {
     final uri = Uri.parse('https://maps.google.com/?q=$lat,$lng');
     if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-      if (mounted) showSnack(context, 'Could not open Google Maps.', error: true);
+      if (mounted)
+        showSnack(context, 'Could not open Google Maps.', error: true);
     }
   }
 
@@ -357,7 +383,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
             email: email.isEmpty ? current.email : email,
           );
       if (mounted) {
-        showSnack(context, 'Emergency contact updated for SOS SMS, Email & WhatsApp!');
+        showSnack(context,
+            'Emergency contact updated for SOS SMS, Email & WhatsApp!');
       }
     }
   }
@@ -476,7 +503,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                         ],
                         const SizedBox(height: 6),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 3),
                           decoration: BoxDecoration(
                             color: Colors.black.withValues(alpha: 0.16),
                             borderRadius: BorderRadius.circular(999),
@@ -543,7 +571,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
               decoration: BoxDecoration(
                 color: const Color(0xFFECFDF5),
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.45)),
+                border: Border.all(
+                    color: const Color(0xFF10B981).withValues(alpha: 0.45)),
               ),
               child: const Text(
                 '🟢 SOS Active — Tap the Green button above to send "I\'m Safe" alert',
@@ -578,7 +607,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
               Container(
                 width: 7,
                 height: 7,
-                decoration: const BoxDecoration(color: Palette.red, shape: BoxShape.circle),
+                decoration: const BoxDecoration(
+                    color: Palette.red, shape: BoxShape.circle),
               ),
               const SizedBox(width: 6),
               Text(
@@ -625,15 +655,12 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
   /// (Matches `SOSPage.tsx` lines 354-418)
   Widget _buildActiveDispatchSummary(SosState sos, double lat, double lng) {
     final store = ref.read(storeProvider);
-    final uid = ref.read(authProvider).session?.userId ?? 'zaid-001';
+    final uid = ref.read(authProvider).session?.userId ?? '';
     final roomId = sos.roomId;
-    final videoLink = sos.videoLink.isNotEmpty
-        ? sos.videoLink
-        : Config.videoCallUrl(roomId);
-    final mapsLink = sos.mapsLink.isNotEmpty
-        ? sos.mapsLink
-        : 'https://maps.google.com/?q=${lat.toStringAsFixed(5)},${lng.toStringAsFixed(5)}';
-    final summaryLink = Config.emergencySummaryUrl(uid);
+    final videoLink =
+        sos.videoLink.isNotEmpty ? sos.videoLink : Config.videoCallUrl(roomId);
+    final mapsLink = sos.mapsLink;
+    final summaryLink = uid.isEmpty ? '' : Config.emergencySummaryUrl(uid);
 
     return GlassCard(
       color: const Color(0xFFFEF2F2),
@@ -680,7 +707,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.45)),
+              border: Border.all(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.45)),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -688,7 +716,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.verified_rounded, color: Color(0xFF10B981), size: 18),
+                    const Icon(Icons.verified_rounded,
+                        color: Color(0xFF10B981), size: 18),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -706,38 +735,45 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 ),
                 const Divider(height: 16),
                 // 1. Blood Group row
-                Row(
-                  children: [
-                    const Icon(Icons.bloodtype_rounded, size: 16, color: Palette.red),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        'Blood Group: ${store.bloodGroup} (Patient: ${store.patientName})',
-                        style: const TextStyle(
-                          color: Palette.text,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                // 2. Live GPS Location row
-                InkWell(
-                  onTap: () => _openMaps(lat, lng),
-                  child: Row(
+                if (store.bloodGroup.toLowerCase() != 'not specified')
+                  Row(
                     children: [
-                      const Icon(Icons.location_on_rounded, size: 15, color: Palette.red),
+                      const Icon(Icons.bloodtype_rounded,
+                          size: 16, color: Palette.red),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          'Live Location: $mapsLink',
+                          'Blood Group: ${store.bloodGroup} (Patient: ${store.patientName})',
                           style: const TextStyle(
-                            color: Palette.blue,
+                            color: Palette.text,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                const SizedBox(height: 6),
+                // 2. Live GPS Location row
+                InkWell(
+                  onTap: mapsLink.isEmpty ? null : () => _openMaps(lat, lng),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.location_on_rounded,
+                          size: 15, color: Palette.red),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'Live Location: ${mapsLink.isEmpty ? 'GPS location unavailable' : mapsLink}',
+                          style: TextStyle(
+                            color: mapsLink.isEmpty
+                                ? Palette.textDim
+                                : Palette.blue,
                             fontSize: 12,
                             fontWeight: FontWeight.w700,
-                            decoration: TextDecoration.underline,
+                            decoration: mapsLink.isEmpty
+                                ? TextDecoration.none
+                                : TextDecoration.underline,
                           ),
                         ),
                       ),
@@ -749,25 +785,31 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.medical_information_rounded, size: 15, color: Palette.purple),
+                    const Icon(Icons.medical_information_rounded,
+                        size: 15, color: Palette.purple),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Medical Details: ${store.medicalDetailsSummary}',
-                            style: const TextStyle(
-                              color: Palette.text,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
+                          if (store.medicalDetailsSummary.isNotEmpty)
+                            Text(
+                              'Medical Details: ${store.medicalDetailsSummary}',
+                              style: const TextStyle(
+                                color: Palette.text,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                          ),
                           const SizedBox(height: 2),
                           InkWell(
-                            onTap: () => _openUrl(summaryLink),
+                            onTap: summaryLink.isEmpty
+                                ? null
+                                : () => _openUrl(summaryLink),
                             child: Text(
-                              'Medical Summary: $summaryLink',
+                              summaryLink.isEmpty
+                                  ? 'Medical Summary: save your profile to create a QR link'
+                                  : 'Medical Summary: $summaryLink',
                               style: const TextStyle(
                                 color: Palette.purple,
                                 fontSize: 11.5,
@@ -787,7 +829,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   onTap: () => _openUrl(videoLink),
                   child: Row(
                     children: [
-                      const Icon(Icons.videocam_rounded, size: 15, color: Palette.teal),
+                      const Icon(Icons.videocam_rounded,
+                          size: 15, color: Palette.teal),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -816,10 +859,10 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     final primaryContact = sos.notifiedContacts.isNotEmpty
         ? sos.notifiedContacts.first
         : const SosContactInfo(
-            name: 'Family Emergency Contact',
-            relationship: 'Parent / Guardian',
-            phone: '+91 98765 43210',
-            email: 'family@jeevancare.in',
+            name: '',
+            relationship: '',
+            phone: '',
+            email: '',
           );
 
     return GlassCard(
@@ -832,14 +875,15 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.check_circle_rounded, color: Color(0xFF059669), size: 22),
+              const Icon(Icons.check_circle_rounded,
+                  color: Color(0xFF059669), size: 22),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'SAFE ALERT DISPATCHED (SMS • EMAIL • WHATSAPP)',
+                      'SAFE STATUS UPDATED',
                       style: TextStyle(
                         color: Color(0xFF065F46),
                         fontSize: 11.5,
@@ -850,7 +894,10 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                     const SizedBox(height: 4),
                     Text(
                       sos.safeResolvedBanner ??
-                          '✅ Safe Alert sent via SMS, Email & WhatsApp to ${primaryContact.name} (${primaryContact.phone}).',
+                          (primaryContact.phone.isEmpty &&
+                                  primaryContact.email.isEmpty
+                              ? 'You marked yourself safe. Add emergency contacts in Profile to share future alerts.'
+                              : '✅ Safe status sent to ${primaryContact.name.isEmpty ? primaryContact.phone : primaryContact.name}.'),
                       style: const TextStyle(
                         color: Color(0xFF047857),
                         fontSize: 13,
@@ -876,8 +923,11 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   minimumSize: const Size(0, 36),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                onPressed: () => _openWhatsAppWithSafe(primaryContact, lat, lng),
-                icon: const Icon(Icons.chat_rounded, size: 15, color: Color(0xFF059669)),
+                onPressed: primaryContact.phone.trim().isEmpty
+                    ? null
+                    : () => _openWhatsAppWithSafe(primaryContact, lat, lng),
+                icon: const Icon(Icons.chat_rounded,
+                    size: 15, color: Color(0xFF059669)),
                 label: const Text(
                   '💬 Send Safe on WhatsApp',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
@@ -891,8 +941,11 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   minimumSize: const Size(0, 36),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                onPressed: () => _openSmsWithSafe(primaryContact, lat, lng),
-                icon: const Icon(Icons.sms_rounded, size: 15, color: Palette.blue),
+                onPressed: primaryContact.phone.trim().isEmpty
+                    ? null
+                    : () => _openSmsWithSafe(primaryContact, lat, lng),
+                icon: const Icon(Icons.sms_rounded,
+                    size: 15, color: Palette.blue),
                 label: const Text(
                   '📱 Send Safe SMS',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
@@ -908,9 +961,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
   /// Dedicated Agora Emergency Video Call Link Card (Shows Room ID + Link + Copy + Join)
   Widget _buildAgoraVideoLinkCard(SosState sos) {
     final roomId = sos.roomId;
-    final videoLink = sos.videoLink.isNotEmpty
-        ? sos.videoLink
-        : Config.videoCallUrl(roomId);
+    final videoLink =
+        sos.videoLink.isNotEmpty ? sos.videoLink : Config.videoCallUrl(roomId);
 
     return GlassCard(
       padding: const EdgeInsets.all(16),
@@ -928,7 +980,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   borderRadius: BorderRadius.circular(12),
                 ),
                 alignment: Alignment.center,
-                child: const Icon(Icons.videocam_rounded, color: Palette.teal, size: 22),
+                child: const Icon(Icons.videocam_rounded,
+                    color: Palette.teal, size: 22),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -1001,10 +1054,12 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 onPressed: () async {
                   await Clipboard.setData(ClipboardData(text: videoLink));
                   if (mounted) {
-                    showSnack(context, 'Agora Video Call Link copied to clipboard!');
+                    showSnack(
+                        context, 'Agora Video Call Link copied to clipboard!');
                   }
                 },
-                icon: const Icon(Icons.copy_rounded, size: 15, color: Palette.teal),
+                icon: const Icon(Icons.copy_rounded,
+                    size: 15, color: Palette.teal),
                 label: const Text(
                   'Copy Agora Link',
                   style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
@@ -1016,7 +1071,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
                 onPressed: () => _openUrl(videoLink),
-                icon: const Icon(Icons.open_in_new_rounded, size: 15, color: Palette.blue),
+                icon: const Icon(Icons.open_in_new_rounded,
+                    size: 15, color: Palette.blue),
                 label: const Text(
                   'Open Web Room',
                   style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700),
@@ -1064,7 +1120,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 TextButton.icon(
                   onPressed: () => _openEditContactDialog(contacts.first),
                   icon: const Icon(Icons.edit_rounded, size: 15),
-                  label: const Text('Edit', style: TextStyle(fontWeight: FontWeight.w800)),
+                  label: const Text('Edit',
+                      style: TextStyle(fontWeight: FontWeight.w800)),
                 ),
             ],
           ),
@@ -1134,7 +1191,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                         ),
                         const SizedBox(width: 6),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 2),
                           decoration: BoxDecoration(
                             color: Palette.tint(Palette.purple),
                             borderRadius: BorderRadius.circular(6),
@@ -1152,7 +1210,12 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      '📱 ${c.phone}  •  ✉️ ${c.email}',
+                      [
+                        if (c.phone.trim().isNotEmpty) '📱 ${c.phone}',
+                        if (c.email.trim().isNotEmpty) '✉️ ${c.email}',
+                      ].join('  •  '),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: Palette.textDim,
                         fontSize: 12,
@@ -1175,19 +1238,25 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
               _statusChip(
                 label: sos.active
                     ? '✅ WhatsApp Dispatched'
-                    : (sos.safeResolvedBanner != null ? '✅ Safe WhatsApp Sent' : '💬 WhatsApp Ready'),
+                    : (sos.safeResolvedBanner != null
+                        ? '✅ Safe WhatsApp Sent'
+                        : '💬 WhatsApp Ready'),
                 color: const Color(0xFF059669),
               ),
               _statusChip(
                 label: sos.active
                     ? '✅ SMS Dispatched'
-                    : (sos.safeResolvedBanner != null ? '✅ Safe SMS Sent' : '📱 SMS Ready'),
+                    : (sos.safeResolvedBanner != null
+                        ? '✅ Safe SMS Sent'
+                        : '📱 SMS Ready'),
                 color: Palette.blue,
               ),
               _statusChip(
                 label: sos.active
                     ? '✅ Email Dispatched'
-                    : (sos.safeResolvedBanner != null ? '✅ Safe Email Sent' : '📧 Email Ready'),
+                    : (sos.safeResolvedBanner != null
+                        ? '✅ Safe Email Sent'
+                        : '📧 Email Ready'),
                 color: Palette.purple,
               ),
               _statusChip(
@@ -1210,7 +1279,9 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   minimumSize: const Size(0, 36),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                onPressed: () => _openWhatsAppWithSos(c, lat, lng),
+                onPressed: c.phone.trim().isEmpty
+                    ? null
+                    : () => _openWhatsAppWithSos(c, lat, lng),
                 icon: const Icon(Icons.chat_rounded, size: 15),
                 label: const Text(
                   '💬 WhatsApp',
@@ -1225,8 +1296,11 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   minimumSize: const Size(0, 36),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                onPressed: () => _openSmsWithSos(c, lat, lng),
-                icon: const Icon(Icons.sms_rounded, size: 15, color: Palette.blue),
+                onPressed: c.phone.trim().isEmpty
+                    ? null
+                    : () => _openSmsWithSos(c, lat, lng),
+                icon: const Icon(Icons.sms_rounded,
+                    size: 15, color: Palette.blue),
                 label: const Text(
                   '📱 SMS',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
@@ -1236,12 +1310,16 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 style: OutlinedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: Palette.purple,
-                  side: BorderSide(color: Palette.purple.withValues(alpha: 0.45)),
+                  side:
+                      BorderSide(color: Palette.purple.withValues(alpha: 0.45)),
                   minimumSize: const Size(0, 36),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                onPressed: () => _openEmailWithSos(c, lat, lng),
-                icon: const Icon(Icons.email_rounded, size: 15, color: Palette.purple),
+                onPressed: c.email.trim().isEmpty
+                    ? null
+                    : () => _openEmailWithSos(c, lat, lng),
+                icon: const Icon(Icons.email_rounded,
+                    size: 15, color: Palette.purple),
                 label: const Text(
                   '📧 Email',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
@@ -1255,8 +1333,9 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                   minimumSize: const Size(0, 36),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                onPressed: () => _dial(c.phone),
-                icon: const Icon(Icons.call_rounded, size: 15, color: Palette.red),
+                onPressed: c.phone.trim().isEmpty ? null : () => _dial(c.phone),
+                icon: const Icon(Icons.call_rounded,
+                    size: 15, color: Palette.red),
                 label: const Text(
                   '📞 Call',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
@@ -1289,7 +1368,9 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
 
   /// Dispatched SOS Message Payload Card (Shows the exact message text including the Agora Video Call Link)
   Widget _buildSosMessagePreviewCard(double lat, double lng) {
-    final msg = ref.read(sosProvider.notifier).formatSosMessage(lat: lat, lng: lng);
+    final msg = ref.read(sosProvider.notifier).formatSosMessage(
+        lat: lat == 0 && lng == 0 ? null : lat,
+        lng: lat == 0 && lng == 0 ? null : lng);
     return GlassCard(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -1311,11 +1392,13 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
                 onPressed: () async {
                   await Clipboard.setData(ClipboardData(text: msg));
                   if (mounted) {
-                    showSnack(context, 'Full SOS message (with Agora link) copied!');
+                    showSnack(
+                        context, 'Full SOS message (with Agora link) copied!');
                   }
                 },
                 icon: const Icon(Icons.copy_rounded, size: 15),
-                label: const Text('Copy Message', style: TextStyle(fontWeight: FontWeight.w800)),
+                label: const Text('Copy Message',
+                    style: TextStyle(fontWeight: FontWeight.w800)),
               ),
             ],
           ),
@@ -1343,11 +1426,183 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     );
   }
 
-  Widget _numberTile(({IconData icon, String number, String label, Color color}) n) {
+  Widget _buildSosLocationMap(double latitude, double longitude) {
+    _sosMapCenterLat ??= latitude;
+    _sosMapCenterLng ??= longitude;
+    final centerLatitude = _sosMapCenterLat!;
+    final centerLongitude = _sosMapCenterLng!;
+    final zoom = _sosMapZoom;
+    const height = 160.0;
+    final tileCount = 1 << zoom;
+    double worldX(double lon) => (lon + 180) / 360 * tileCount * 256;
+    double worldY(double lat) {
+      final safeLat = lat.clamp(-85.0511, 85.0511).toDouble();
+      final radians = safeLat * math.pi / 180;
+      return (1 -
+              math.log(math.tan(radians) + 1 / math.cos(radians)) / math.pi) /
+          2 *
+          tileCount *
+          256;
+    }
+
+    final centerWorldX = worldX(centerLongitude);
+    final centerWorldY = worldY(centerLatitude);
+    final centerTileX = (centerWorldX / 256).floor();
+    final centerTileY = (centerWorldY / 256).floor();
+    final fractionX = centerWorldX - centerTileX * 256;
+    final fractionY = centerWorldY - centerTileY * 256;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: SizedBox(
+        height: height,
+        width: double.infinity,
+        child: LayoutBuilder(builder: (context, constraints) {
+          final horizontalRadius = (constraints.maxWidth / 512).ceil();
+          final centerX = constraints.maxWidth / 2;
+          final centerY = height / 2;
+          final tiles = <Widget>[];
+          for (var dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
+            for (var dy = -1; dy <= 1; dy++) {
+              final x =
+                  ((centerTileX + dx) % tileCount + tileCount) % tileCount;
+              final y = centerTileY + dy;
+              if (y < 0 || y >= tileCount) continue;
+              final left = centerX + dx * 256 - fractionX;
+              final top = centerY + dy * 256 - fractionY;
+              tiles.add(Positioned(
+                left: left,
+                top: top,
+                width: 256,
+                height: 256,
+                child: MapTileImage(zoom: zoom, x: x, y: y),
+              ));
+            }
+          }
+          Offset pointOffset(double lat, double lon) => Offset(
+                centerX + worldX(lon) - centerWorldX,
+                centerY + worldY(lat) - centerWorldY,
+              );
+          final user = pointOffset(latitude, longitude);
+          final visiblePois = _filteredFacilities();
+          final poiDots = visiblePois.map((poi) {
+            final point = pointOffset(poi.lat, poi.lon);
+            if (point.dx < -8 ||
+                point.dy < -8 ||
+                point.dx > constraints.maxWidth + 8 ||
+                point.dy > height + 8) {
+              return const SizedBox.shrink();
+            }
+            return Positioned(
+              left: point.dx - 5,
+              top: point.dy - 5,
+              child: Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: _isEmergencyFacility(poi) ? Palette.red : Palette.teal,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black26, blurRadius: 3),
+                  ],
+                ),
+              ),
+            );
+          });
+          return MapGestureLayer(
+            onPan: (delta) {
+              if (delta.distance < 0.5) return;
+              final worldSize = tileCount * 256.0;
+              final nextX = centerWorldX - delta.dx;
+              final nextY = (centerWorldY - delta.dy).clamp(0.0, worldSize);
+              setState(() {
+                _sosMapCenterLng = nextX / worldSize * 360 - 180;
+                final n = math.pi * (1 - 2 * nextY / worldSize);
+                _sosMapCenterLat =
+                    math.atan((math.exp(n) - math.exp(-n)) / 2) * 180 / math.pi;
+              });
+            },
+            onZoom: (delta) => setState(
+                () => _sosMapZoom = (_sosMapZoom + delta).clamp(4, 19)),
+            child: Stack(
+              clipBehavior: Clip.hardEdge,
+              children: [
+                const Positioned.fill(
+                    child: ColoredBox(color: Color(0xFFE8EDF0))),
+                ...tiles,
+                ...poiDots,
+                Positioned(
+                  left: user.dx - 7,
+                  top: user.dy - 7,
+                  child: Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      color: Palette.blue,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 2),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Column(children: [
+                    _sosMapControl(
+                        Icons.add_rounded,
+                        () => setState(() =>
+                            _sosMapZoom = (_sosMapZoom + 1).clamp(4, 19))),
+                    const SizedBox(height: 4),
+                    _sosMapControl(
+                        Icons.remove_rounded,
+                        () => setState(() =>
+                            _sosMapZoom = (_sosMapZoom - 1).clamp(4, 19))),
+                  ]),
+                ),
+                const Positioned(
+                  right: 6,
+                  bottom: 4,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(color: Colors.white70),
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                      child: Text('© OpenStreetMap • TomTom backup',
+                          style:
+                              TextStyle(fontSize: 9, color: Palette.textDim)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _sosMapControl(IconData icon, VoidCallback onTap) => Material(
+        color: Colors.white,
+        elevation: 2,
+        borderRadius: BorderRadius.circular(9),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(9),
+          child: SizedBox(
+            width: 34,
+            height: 34,
+            child: Icon(icon, size: 19, color: Palette.text),
+          ),
+        ),
+      );
+
+  Widget _numberTile(
+      ({IconData icon, String number, String label, Color color}) n) {
     return SizedBox(
       width: 96,
       child: GlassCard(
-        padding: const EdgeInsets.symmetric(horizontal: Gap.sm, vertical: Gap.md),
+        padding:
+            const EdgeInsets.symmetric(horizontal: Gap.sm, vertical: Gap.md),
         onTap: () => _dial(n.number),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1414,7 +1669,8 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
             label: Text(
               f.label,
               style: TextStyle(
-                color: _selectedPoiCategory == f.id ? Palette.red : Palette.text,
+                color:
+                    _selectedPoiCategory == f.id ? Palette.red : Palette.text,
                 fontWeight: FontWeight.w700,
                 fontSize: 13,
               ),
@@ -1436,12 +1692,19 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
     final sos = ref.watch(sosProvider);
     final store = ref.watch(storeProvider);
     final ev = sos.event;
-    final lat = ev?.lat ?? 12.9716;
-    final lng = ev?.lng ?? 77.5946;
-
-    final filteredPois = _selectedPoiCategory == 'all'
-        ? _nearbyPois
-        : _nearbyPois.where((p) => p.category == _selectedPoiCategory).toList();
+    final hasLocation = ev?.hasLocation == true;
+    final lat = ev?.lat ?? 0.0;
+    final lng = ev?.lng ?? 0.0;
+    if (hasLocation) {
+      final key = '${lat.toStringAsFixed(3)}:${lng.toStringAsFixed(3)}';
+      if (_nearbyLocationKey != key) {
+        _nearbyLocationKey = key;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_loadNearbyFacilities(lat, lng));
+        });
+      }
+    }
+    final filteredPois = _filteredFacilities();
 
     final list = ListView(
       padding: const EdgeInsets.fromLTRB(20, Gap.lg, 20, Gap.xl),
@@ -1450,14 +1713,16 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
         if (sos.active) ...[
           const PageTitle(
             'Emergency SOS Active',
-            subtitle: 'SMS, Email & WhatsApp sent with your Live GPS & Agora Video Call Link',
+            subtitle:
+                'SMS, Email & WhatsApp sent with your Live GPS & Agora Video Call Link',
           ),
           const SizedBox(height: Gap.sm),
           _activePill(sos.roomId),
         ] else
           const PageTitle(
             'Emergency SOS',
-            subtitle: 'Tap 3 times within 5 seconds to send SMS, Email & WhatsApp with Agora Video Link',
+            subtitle:
+                'Tap 3 times within 5 seconds to send SMS, Email & WhatsApp with Agora Video Link',
           ),
         const SizedBox(height: Gap.lg),
 
@@ -1467,10 +1732,13 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.my_location_rounded, size: 14, color: Palette.textMuted),
+            const Icon(Icons.my_location_rounded,
+                size: 14, color: Palette.textMuted),
             const SizedBox(width: 6),
             Text(
-              'Live GPS: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}',
+              hasLocation
+                  ? 'Live GPS: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}'
+                  : 'Live GPS: waiting for a current location',
               style: const TextStyle(
                 color: Palette.textMuted,
                 fontSize: 12,
@@ -1519,12 +1787,27 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
           compact: true,
           patientName: store.patientName,
           bloodGroup: store.bloodGroup,
-          allergies: store.allergies.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-          conditions: store.conditions.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-          medications: store.medications.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
+          dob: store.dateOfBirth,
+          allergies: store.allergies
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+          conditions: store.conditions
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
+          medications: store.medications
+              .split(',')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList(),
           emergencyContactName: store.contactName,
           emergencyContactRelation: store.contactRelation,
           emergencyContactPhone: store.contactPhone,
+          emergencyContacts: store.emergencyContacts,
+          showEmergencyContacts: store.showEmergencyContactsOnQr,
         ),
         const SizedBox(height: Gap.xl),
 
@@ -1532,75 +1815,98 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
         const SectionHeader('Nearby Emergency Help'),
         _filterChips(),
         const SizedBox(height: Gap.md),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: SizedBox(
-            height: 160,
-            width: double.infinity,
-            child: CustomPaint(
-              painter: _SosMapPainter(selectedCategory: _selectedPoiCategory),
+        if (hasLocation)
+          _buildSosLocationMap(lat, lng)
+        else
+          GlassCard(
+            padding: const EdgeInsets.all(16),
+            child: const Text(
+              'Nearby services will load when a current GPS location is available. No default location is shown.',
+              style: TextStyle(color: Palette.textDim, fontSize: 13),
             ),
           ),
-        ),
         const SizedBox(height: Gap.md),
         GlassCard(
-          padding: const EdgeInsets.symmetric(horizontal: Gap.lg, vertical: Gap.xs),
+          padding:
+              const EdgeInsets.symmetric(horizontal: Gap.lg, vertical: Gap.xs),
           child: Column(
             children: [
-              for (var i = 0; i < filteredPois.length; i++) ...[
-                if (i > 0) const Divider(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: Gap.md),
-                  child: Row(
-                    children: [
-                      IconChip(filteredPois[i].icon, color: filteredPois[i].color, size: 40),
-                      const SizedBox(width: Gap.md),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              filteredPois[i].name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Palette.text,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              '${filteredPois[i].distance} · ${filteredPois[i].type}',
-                              style: const TextStyle(
-                                color: Palette.textDim,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                                fontFeatures: kTabular,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      _circleIconButton(
-                        icon: Icons.call_rounded,
-                        color: filteredPois[i].color,
-                        tooltip: 'Call ${filteredPois[i].phone}',
-                        size: 36,
-                        onPressed: () => _dial(filteredPois[i].phone),
-                      ),
-                      const SizedBox(width: Gap.sm),
-                      _circleIconButton(
-                        icon: Icons.directions_rounded,
-                        color: Palette.blue,
-                        tooltip: 'Directions',
-                        size: 36,
-                        onPressed: () => _openMaps(filteredPois[i].lat, filteredPois[i].lng),
-                      ),
-                    ],
+              if (_loadingNearbyFacilities)
+                const Padding(
+                  padding: EdgeInsets.all(18),
+                  child: CircularProgressIndicator(),
+                )
+              else if (!hasLocation || filteredPois.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(18),
+                  child: Text(
+                    'No nearby hospitals or clinics are available for this location.',
+                    style: TextStyle(color: Palette.textDim, fontSize: 13),
                   ),
-                ),
-              ],
+                )
+              else
+                for (var i = 0; i < filteredPois.length; i++) ...[
+                  if (i > 0) const Divider(),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: Gap.md),
+                    child: Row(
+                      children: [
+                        IconChip(Icons.local_hospital_rounded,
+                            color: _isEmergencyFacility(filteredPois[i])
+                                ? Palette.red
+                                : Palette.teal,
+                            size: 40),
+                        const SizedBox(width: Gap.md),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                filteredPois[i].name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Palette.text,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${((filteredPois[i].distanceMeters ?? 0) / 1000).toStringAsFixed(1)} km · ${filteredPois[i].type}',
+                                style: const TextStyle(
+                                  color: Palette.textDim,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  fontFeatures: kTabular,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (filteredPois[i].phone.isNotEmpty)
+                          _circleIconButton(
+                            icon: Icons.call_rounded,
+                            color: _isEmergencyFacility(filteredPois[i])
+                                ? Palette.red
+                                : Palette.teal,
+                            tooltip: 'Call ${filteredPois[i].phone}',
+                            size: 36,
+                            onPressed: () => _dial(filteredPois[i].phone),
+                          ),
+                        const SizedBox(width: Gap.sm),
+                        _circleIconButton(
+                          icon: Icons.directions_rounded,
+                          color: Palette.blue,
+                          tooltip: 'Directions',
+                          size: 36,
+                          onPressed: () => _openMaps(
+                              filteredPois[i].lat, filteredPois[i].lon),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
             ],
           ),
         ),
@@ -1616,89 +1922,4 @@ class _SosActiveScreenState extends ConsumerState<SosActiveScreen>
       body: list,
     );
   }
-}
-
-class _SosMapPainter extends CustomPainter {
-  _SosMapPainter({required this.selectedCategory});
-
-  final String selectedCategory;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Light map background
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..color = const Color(0xFFEFF6FF),
-    );
-
-    // Subtle street grid
-    final gridPaint = Paint()
-      ..color = const Color(0xFFDBEAFE)
-      ..strokeWidth = 1.2;
-    for (double x = 0; x < size.width; x += 32) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-    for (double y = 0; y < size.height; y += 32) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-
-    // Major arterial roads
-    final roadPaint = Paint()
-      ..color = Colors.white
-      ..strokeWidth = 6
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(
-      Offset(0, size.height * 0.45),
-      Offset(size.width, size.height * 0.55),
-      roadPaint,
-    );
-    canvas.drawLine(
-      Offset(size.width * 0.48, 0),
-      Offset(size.width * 0.52, size.height),
-      roadPaint,
-    );
-
-    final center = Offset(size.width * 0.5, size.height * 0.5);
-
-    // Radar radius rings
-    canvas.drawCircle(
-      center,
-      64,
-      Paint()
-        ..color = Palette.red.withValues(alpha: 0.08)
-        ..style = PaintingStyle.fill,
-    );
-    canvas.drawCircle(
-      center,
-      64,
-      Paint()
-        ..color = Palette.red.withValues(alpha: 0.28)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2,
-    );
-
-    // POI markers
-    final markers = <({Offset offset, Color color, String cat})>[
-      (offset: Offset(size.width * 0.26, size.height * 0.28), color: Palette.red, cat: 'hospital'),
-      (offset: Offset(size.width * 0.74, size.height * 0.30), color: Palette.red, cat: 'hospital'),
-      (offset: Offset(size.width * 0.34, size.height * 0.72), color: Palette.blue, cat: 'police'),
-      (offset: Offset(size.width * 0.70, size.height * 0.68), color: Palette.orange, cat: 'food'),
-      (offset: Offset(size.width * 0.58, size.height * 0.24), color: Palette.teal, cat: 'washroom'),
-      (offset: Offset(size.width * 0.20, size.height * 0.58), color: Palette.purple, cat: 'shelter'),
-    ];
-
-    for (final m in markers) {
-      if (selectedCategory != 'all' && selectedCategory != m.cat) continue;
-      canvas.drawCircle(m.offset, 10, Paint()..color = Colors.white);
-      canvas.drawCircle(m.offset, 7.5, Paint()..color = m.color);
-    }
-
-    // Center user marker
-    canvas.drawCircle(center, 11, Paint()..color = Colors.white);
-    canvas.drawCircle(center, 8, Paint()..color = Palette.red);
-  }
-
-  @override
-  bool shouldRepaint(covariant _SosMapPainter oldDelegate) =>
-      oldDelegate.selectedCategory != selectedCategory;
 }

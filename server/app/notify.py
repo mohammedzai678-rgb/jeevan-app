@@ -187,23 +187,25 @@ class Notifier:
         self,
         *,
         user_name: str,
-        lat: float,
-        lng: float,
+        lat: float | None,
+        lng: float | None,
         event_id: str,
         room_id: str,
         contacts: list[dict[str, Any]],
-        blood_group: str = "A+",
+        blood_group: str = "Not specified",
         medical_details: str = "",
         user_id: str = "zaid-001",
     ) -> dict[str, Any]:
         recipients = merge_contacts(contacts)
-        maps, video = maps_link(lat, lng), video_link(self.settings, room_id)
+        maps = maps_link(lat, lng) if lat is not None and lng is not None else ""
+        location_text = maps or "GPS location is unavailable"
+        video = video_link(self.settings, room_id)
         summary_url = f"{self.settings.app_public_url.rstrip('/')}/emergency/{quote(user_id)}"
         med_line = f"Medical Details: {medical_details}\n" if medical_details.strip() else ""
         sms_text = (
             f"🚨 EMERGENCY SOS from {user_name} (JeevanCare)!\n"
             f"Blood Group: {blood_group}\n"
-            f"Live GPS Location: {maps}\n"
+            f"Live GPS Location: {location_text}\n"
             f"{med_line}"
             f"Agora Video Call Link: {video}\n"
             f"Medical Summary: {summary_url}"
@@ -214,13 +216,18 @@ class Notifier:
             if medical_details.strip()
             else ""
         )
+        location_html = (
+            f"<li><strong>Live GPS Location:</strong> <a href='{maps}' style='color:#60a5fa;'>{maps}</a></li>"
+            if maps
+            else "<li><strong>Live GPS Location:</strong> GPS location is unavailable.</li>"
+        )
         email_html = (
             f"<div style='font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;background:#111827;color:#ffffff;border-radius:12px;'>"
             f"<h2 style='color:#ef4444;margin-top:0;'>🚨 EMERGENCY SOS ALERT</h2>"
             f"<p><strong>{safe_name}</strong> (Blood Group: <strong>{html.escape(blood_group)}</strong>) has triggered an emergency SOS alert on JeevanCare.</p>"
             f"<ul>"
             f"<li><strong>Blood Group:</strong> {html.escape(blood_group)}</li>"
-            f"<li><strong>Live GPS Location:</strong> <a href='{maps}' style='color:#60a5fa;'>{maps}</a></li>"
+            f"{location_html}"
             f"{med_html}"
             f"<li><strong>Medical Summary:</strong> <a href='{summary_url}' style='color:#34d399;'>{summary_url}</a></li>"
             f"<li><strong>Join Agora Video Call:</strong> <a href='{video}' style='color:#a78bfa;'>{video}</a></li>"
@@ -238,7 +245,7 @@ class Notifier:
                             client,
                             phone=r["phone"],
                             kind="sos",
-                            params={"USER_NAME": user_name, "MAPS_LINK": maps, "VIDEO_LINK": video},
+                            params={"USER_NAME": user_name, "MAPS_LINK": location_text, "VIDEO_LINK": video},
                         )
                     )
                 if r["phone"] and self.sms_ready:
@@ -272,17 +279,9 @@ class Notifier:
             for r in recipients:
                 key = r["phone"] or r["email"] or r["name"] or "contact"
                 results[str(key)] = {
-                    "whatsapp": "accepted" if r["phone"] else "skipped",
-                    "sms": "accepted" if r["phone"] else "skipped",
-                    "email": "sent" if r["email"] else "skipped",
-                    "videoLink": video,
-                    "mapsLink": maps,
-                }
-            if not results:
-                results["default"] = {
-                    "whatsapp": "accepted",
-                    "sms": "accepted",
-                    "email": "sent",
+                    "whatsapp": "not_configured" if r["phone"] else "skipped",
+                    "sms": "not_configured" if r["phone"] else "skipped",
+                    "email": "not_configured" if r["email"] else "skipped",
                     "videoLink": video,
                     "mapsLink": maps,
                 }

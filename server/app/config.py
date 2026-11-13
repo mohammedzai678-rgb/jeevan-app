@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     huggingface_api_key: str = ""
     huggingface_model: str = "meta-llama/Llama-3.1-8B-Instruct"
     ai_text_provider: str = "gemini"
-    llm_timeout_s: float = 30.0
+    llm_timeout_s: float = 60.0
 
     brevo_api_key: str = ""
     brevo_from_email: str = ""

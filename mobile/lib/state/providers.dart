@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
@@ -20,12 +21,18 @@ import '../data/supabase_service.dart';
 import '../data/sse.dart';
 
 // ── Services (singletons). storeProvider is overridden in main() after async init. ─────────────
-final storeProvider = Provider<SecureStore>((_) => throw UnimplementedError('override in main'));
-final authProvider = Provider<AuthService>((ref) => AuthService(ref.watch(storeProvider)));
-final apiProvider = Provider<ApiClient>((ref) => ApiClient(ref.watch(authProvider), ref.watch(storeProvider)));
-final supabaseProvider = Provider<SupabaseService>((ref) => SupabaseService(ref.watch(authProvider)));
-final liveProvider = Provider<LiveService>((ref) => LiveService(ref.watch(apiProvider), ref.watch(authProvider)));
-final bleProvider = Provider<BleService>((ref) => BleService(ref.watch(storeProvider)));
+final storeProvider =
+    Provider<SecureStore>((_) => throw UnimplementedError('override in main'));
+final authProvider =
+    Provider<AuthService>((ref) => AuthService(ref.watch(storeProvider)));
+final apiProvider = Provider<ApiClient>(
+    (ref) => ApiClient(ref.watch(authProvider), ref.watch(storeProvider)));
+final supabaseProvider = Provider<SupabaseService>(
+    (ref) => SupabaseService(ref.watch(authProvider)));
+final liveProvider = Provider<LiveService>(
+    (ref) => LiveService(ref.watch(apiProvider), ref.watch(authProvider)));
+final bleProvider =
+    Provider<BleService>((ref) => BleService(ref.watch(storeProvider)));
 
 // ── Streams ──────────────────────────────────────────────────────────────────────────────────────
 final sessionProvider = StreamProvider<Session?>((ref) async* {
@@ -38,13 +45,15 @@ final linkStateProvider = StreamProvider<LinkState>((ref) async* {
   yield live.state;
   yield* live.link;
 });
-final latencyProvider = StreamProvider<int>((ref) => ref.watch(liveProvider).latencyMs);
+final latencyProvider =
+    StreamProvider<int>((ref) => ref.watch(liveProvider).latencyMs);
 final bleStateProvider = StreamProvider<BleState>((ref) async* {
   final ble = ref.watch(bleProvider);
   yield ble.current;
   yield* ble.state;
 });
-final bleScanProvider = StreamProvider<List<BleDevice>>((ref) => ref.watch(bleProvider).found);
+final bleScanProvider =
+    StreamProvider<List<BleDevice>>((ref) => ref.watch(bleProvider).found);
 
 // ── Devices + live vitals ────────────────────────────────────────────────────────────────────────
 /// How long a BLE sample outranks a cloud sample for the same metric.
@@ -52,14 +61,26 @@ const _bleFresh = Duration(seconds: 4);
 const historyPoints = 90;
 
 class DevicesState {
-  const DevicesState({this.devices = const {}, this.selected, this.hrSeries = const [], this.spo2Series = const [], this.ecgSeries = const []});
+  const DevicesState(
+      {this.devices = const {},
+      this.selected,
+      this.hrSeries = const [],
+      this.spo2Series = const [],
+      this.ecgSeries = const []});
   final Map<String, DeviceSnapshot> devices;
   final String? selected;
-  final List<double> hrSeries, spo2Series, ecgSeries; // rolling buffers for the selected device
+  final List<double> hrSeries,
+      spo2Series,
+      ecgSeries; // rolling buffers for the selected device
 
   DeviceSnapshot? get current => selected == null ? null : devices[selected];
 
-  DevicesState copyWith({Map<String, DeviceSnapshot>? devices, String? selected, List<double>? hrSeries, List<double>? spo2Series, List<double>? ecgSeries}) =>
+  DevicesState copyWith(
+          {Map<String, DeviceSnapshot>? devices,
+          String? selected,
+          List<double>? hrSeries,
+          List<double>? spo2Series,
+          List<double>? ecgSeries}) =>
       DevicesState(
         devices: devices ?? this.devices,
         selected: selected ?? this.selected,
@@ -70,7 +91,8 @@ class DevicesState {
 }
 
 class DevicesController extends StateNotifier<DevicesState> {
-  DevicesController(this._ref) : super(DevicesState(selected: _ref.read(storeProvider).lastDeviceId)) {
+  DevicesController(this._ref)
+      : super(DevicesState(selected: _ref.read(storeProvider).lastDeviceId)) {
     final live = _ref.read(liveProvider);
     final ble = _ref.read(bleProvider);
     _subs.add(live.snapshots.listen(_onCloud));
@@ -88,7 +110,8 @@ class DevicesController extends StateNotifier<DevicesState> {
     final list = await _ref.read(apiProvider).devices();
     final map = {for (final d in list) d.deviceId: d};
     var sel = state.selected;
-    if (sel == null || !map.containsKey(sel)) sel = list.isEmpty ? null : list.first.deviceId;
+    if (sel == null || !map.containsKey(sel))
+      sel = list.isEmpty ? null : list.first.deviceId;
     state = state.copyWith(devices: map, selected: sel);
     if (sel != null) await _ref.read(storeProvider).setLastDeviceId(sel);
   }
@@ -122,16 +145,21 @@ class DevicesController extends StateNotifier<DevicesState> {
   void _onCloud(DeviceSnapshot snap) {
     final prev = state.devices[snap.deviceId];
     var merged = snap;
-    final bleRecent = DateTime.now().difference(_lastBle) < _bleFresh && snap.deviceId == state.selected;
+    final bleRecent = DateTime.now().difference(_lastBle) < _bleFresh &&
+        snap.deviceId == state.selected;
     if (prev != null && bleRecent) {
       // Keep BLE numbers on screen (fresher); still accept cloud online flag / reminder.
-      merged = prev.copyWith(online: snap.online || prev.online, reminder: snap.reminder);
+      merged = prev.copyWith(
+          online: snap.online || prev.online, reminder: snap.reminder);
     } else if (snap.vitals.isEmpty && prev != null && snap.seq == 0) {
       // device_status message (online=false only)
       merged = prev.copyWith(online: snap.online);
     }
     final devices = Map.of(state.devices)..[snap.deviceId] = merged;
-    state = _withSeries(state.copyWith(devices: devices, selected: state.selected ?? snap.deviceId), merged);
+    state = _withSeries(
+        state.copyWith(
+            devices: devices, selected: state.selected ?? snap.deviceId),
+        merged);
   }
 
   void _onBle(BleSample s) {
@@ -143,12 +171,18 @@ class DevicesController extends StateNotifier<DevicesState> {
       heartRate: s.vitals.heartRate ?? prev.vitals.heartRate,
       spo2: s.vitals.spo2 ?? prev.vitals.spo2,
       temperature: s.vitals.temperature ?? prev.vitals.temperature,
-      ecgBpm: s.vitals.leadOff == true ? null : (s.vitals.ecgBpm ?? prev.vitals.ecgBpm),
+      ecgBpm: s.vitals.leadOff == true
+          ? null
+          : (s.vitals.ecgBpm ?? prev.vitals.ecgBpm),
       ecgValue: s.vitals.ecgValue,
       leadOff: s.vitals.leadOff,
       fingerDetected: s.vitals.fingerDetected,
     );
-    final snap = prev.copyWith(online: true, vitals: v, analysis: localTriage(v), source: VitalsSource.ble);
+    final snap = prev.copyWith(
+        online: true,
+        vitals: v,
+        analysis: localTriage(v),
+        source: VitalsSource.ble);
     final devices = Map.of(state.devices)..[id] = snap;
     state = _withSeries(state.copyWith(devices: devices), snap);
     // Gateway: forward to the cloud so history/caregivers stay in sync (fire-and-forget over the open socket).
@@ -180,7 +214,8 @@ class DevicesController extends StateNotifier<DevicesState> {
     final id = state.selected;
     final prev = id == null ? null : state.devices[id];
     if (prev == null) return;
-    state = state.copyWith(devices: Map.of(state.devices)..[id!] = prev.copyWith(reminder: r));
+    state = state.copyWith(
+        devices: Map.of(state.devices)..[id!] = prev.copyWith(reminder: r));
   }
 
   @override
@@ -192,7 +227,8 @@ class DevicesController extends StateNotifier<DevicesState> {
   }
 }
 
-final devicesProvider = StateNotifierProvider<DevicesController, DevicesState>((ref) => DevicesController(ref));
+final devicesProvider = StateNotifierProvider<DevicesController, DevicesState>(
+    (ref) => DevicesController(ref));
 
 // ── SOS (Website-Parity 3-Tap Activation -> SMS/Email/WhatsApp + Agora Link -> Green Safe Button) ──
 class SosContactInfo {
@@ -249,7 +285,8 @@ class SosState {
 
   int get remainingTaps => (3 - tapCount).clamp(0, 3);
 
-  String? get safeResolvedBanner => (!active && lastSafeAt != null) ? statusMessage : null;
+  String? get safeResolvedBanner =>
+      (!active && lastSafeAt != null) ? statusMessage : null;
 
   String get roomId {
     final r = event?.roomId ?? '';
@@ -262,8 +299,10 @@ class SosState {
   String get videoLink => Config.videoCallUrl(roomId);
 
   String get mapsLink {
-    final lat = event?.lat ?? 12.9716;
-    final lng = event?.lng ?? 77.5946;
+    final current = event;
+    if (current == null || !current.hasLocation) return '';
+    final lat = current.lat;
+    final lng = current.lng;
     return 'https://maps.google.com/?q=$lat,$lng';
   }
 
@@ -285,7 +324,8 @@ class SosState {
         resolving: resolving ?? this.resolving,
         tapCount: tapCount ?? this.tapCount,
         error: error,
-        statusMessage: clearStatusMessage ? null : (statusMessage ?? this.statusMessage),
+        statusMessage:
+            clearStatusMessage ? null : (statusMessage ?? this.statusMessage),
         lastSafeAt: lastSafeAt ?? this.lastSafeAt,
         delivery: delivery ?? this.delivery,
         notifiedContacts: notifiedContacts ?? this.notifiedContacts,
@@ -312,14 +352,14 @@ class SosController extends StateNotifier<SosState> {
 
   List<SosContactInfo> currentContacts() {
     final store = _ref.read(storeProvider);
-    return [
-      SosContactInfo(
-        name: store.contactName,
-        relationship: store.contactRelation,
-        phone: store.contactPhone,
-        email: store.contactEmail,
-      ),
-    ];
+    return store.emergencyContacts
+        .map((contact) => SosContactInfo(
+              name: contact['name'] ?? '',
+              relationship: contact['relationship'] ?? '',
+              phone: contact['phone'] ?? '',
+              email: contact['email'] ?? '',
+            ))
+        .toList();
   }
 
   Future<void> updatePrimaryContact({
@@ -328,39 +368,115 @@ class SosController extends StateNotifier<SosState> {
     required String phone,
     required String email,
   }) async {
-    final store = _ref.read(storeProvider);
-    await store.setContactName(name);
-    await store.setContactRelation(relationship);
-    await store.setContactPhone(phone);
-    await store.setContactEmail(email);
-    state = state.copyWith(notifiedContacts: currentContacts());
+    final contacts = currentContacts();
+    final primary = SosContactInfo(
+      name: name,
+      relationship: relationship,
+      phone: phone,
+      email: email,
+    );
+    if (contacts.isEmpty) {
+      contacts.add(primary);
+    } else {
+      contacts[0] = primary;
+    }
+    await updateContacts(contacts);
   }
+
+  Future<void> updateContacts(List<SosContactInfo> contacts) async {
+    final store = _ref.read(storeProvider);
+    await store.setEmergencyContacts([
+      for (final contact in contacts)
+        {
+          'name': contact.name,
+          'relationship': contact.relationship,
+          'phone': contact.phone,
+          'email': contact.email,
+        },
+    ]);
+    state = state.copyWith(notifiedContacts: currentContacts());
+    final profile = <String, dynamic>{
+      'name': store.patientName,
+      'bloodType': store.bloodGroup,
+      'dob': store.dateOfBirth,
+      'allergies': _profileValues(store.allergies),
+      'conditions': _profileValues(store.conditions),
+      'currentMedications': _profileValues(store.medications),
+      'emergencyContacts': [
+        for (final contact in currentContacts()) contact.toJson()
+      ],
+      'showEmergencyContacts': store.showEmergencyContactsOnQr,
+    };
+    try {
+      await _ref.read(apiProvider).updateEmergencySummary(profile);
+    } catch (_) {
+      // Local emergency contacts remain saved if the network is offline.
+    }
+  }
+
+  List<String> _profileValues(String value) => value
+      .split(',')
+      .map((part) => part.trim())
+      .where(
+          (part) => part.isNotEmpty && !part.toLowerCase().startsWith('none'))
+      .toList();
 
   String formatSosMessage({double? lat, double? lng, String? roomOverride}) {
     final store = _ref.read(storeProvider);
     final uid = _ref.read(authProvider).session?.userId ?? 'patient-user';
-    final resolvedLat = lat ?? state.event?.lat ?? 12.9716;
-    final resolvedLng = lng ?? state.event?.lng ?? 77.5946;
-    final resolvedRoom = (roomOverride != null && roomOverride.isNotEmpty) ? roomOverride : state.roomId;
-    final mapsUrl = 'https://maps.google.com/?q=$resolvedLat,$resolvedLng';
+    final current = state.event;
+    final resolvedLat =
+        lat ?? (current?.hasLocation == true ? current!.lat : null);
+    final resolvedLng =
+        lng ?? (current?.hasLocation == true ? current!.lng : null);
+    final resolvedRoom = (roomOverride != null && roomOverride.isNotEmpty)
+        ? roomOverride
+        : state.roomId;
+    final mapsUrl = resolvedLat != null && resolvedLng != null
+        ? 'https://maps.google.com/?q=$resolvedLat,$resolvedLng'
+        : 'GPS location is not available yet.';
     final agoraUrl = Config.videoCallUrl(resolvedRoom);
     final summaryUrl = Config.emergencySummaryUrl(uid);
+    final bloodLine = store.bloodGroup.trim().isEmpty ||
+            store.bloodGroup.toLowerCase() == 'not specified'
+        ? ''
+        : 'Blood Group: ${store.bloodGroup}\n';
 
+    final birthDate = store.dateOfBirth.trim();
+    final emergencyContacts = currentContacts();
+    final contactLines = emergencyContacts
+        .map((contact) =>
+            '${contact.name}${contact.relationship.isNotEmpty ? ' (${contact.relationship})' : ''}: ${[
+              contact.phone,
+              contact.email
+            ].where((value) => value.isNotEmpty).join(' · ')}')
+        .join('\n');
     return '🚨 EMERGENCY SOS from ${store.patientName} (JeevanCare)!\n'
-        'Blood Group: ${store.bloodGroup}\n'
+        '$bloodLine'
+        '${birthDate.isEmpty ? '' : 'Date of Birth: $birthDate\n'}'
         'Live GPS Location: $mapsUrl\n'
-        'Medical Details: ${store.medicalDetailsSummary}\n'
+        '${store.medicalDetailsSummary.isEmpty ? '' : 'Medical Details: ${store.medicalDetailsSummary}\n'}'
+        '${contactLines.isEmpty ? '' : 'Emergency Contacts:\n$contactLines\n'}'
         'Medical Summary: $summaryUrl\n'
         'Agora Video Call Link: $agoraUrl';
   }
 
   String formatSafeMessage({double? lat, double? lng}) {
     final store = _ref.read(storeProvider);
-    final resolvedLat = lat ?? state.event?.lat ?? 12.9716;
-    final resolvedLng = lng ?? state.event?.lng ?? 77.5946;
-    final mapsUrl = 'https://maps.google.com/?q=$resolvedLat,$resolvedLng';
+    final current = state.event;
+    final resolvedLat =
+        lat ?? (current?.hasLocation == true ? current!.lat : null);
+    final resolvedLng =
+        lng ?? (current?.hasLocation == true ? current!.lng : null);
+    final mapsUrl = resolvedLat != null && resolvedLng != null
+        ? 'https://maps.google.com/?q=$resolvedLat,$resolvedLng'
+        : 'not available (GPS location unavailable)';
+    final bloodLine = store.bloodGroup.trim().isEmpty ||
+            store.bloodGroup.toLowerCase() == 'not specified'
+        ? ''
+        : ' Blood Group: ${store.bloodGroup}.';
     return '✅ SAFE ALERT from ${store.patientName} (JeevanCare)!\n'
-        '${store.patientName} (Blood Group: ${store.bloodGroup}) has marked themselves as SAFE. The emergency SOS alert is now resolved.\n'
+        '${store.patientName} has marked themselves as SAFE.$bloodLine The emergency SOS alert is now resolved.\n'
         'Current Location: $mapsUrl\n'
         'No further action is needed. Thank you for your concern.';
   }
@@ -371,7 +487,8 @@ class SosController extends StateNotifier<SosState> {
     if (state.sending || state.active || state.resolving) return false;
 
     final now = DateTime.now();
-    final withinWindow = _lastTapAt != null && now.difference(_lastTapAt!) <= _tapResetWindow;
+    final withinWindow =
+        _lastTapAt != null && now.difference(_lastTapAt!) <= _tapResetWindow;
     final nextCount = withinWindow ? (state.tapCount + 1).clamp(1, 3) : 1;
     _lastTapAt = now;
     _tapResetTimer?.cancel();
@@ -400,13 +517,15 @@ class SosController extends StateNotifier<SosState> {
 
   /// Instant: shows the active SOS UI (green button + Agora video call link + notified contacts)
   /// immediately on the 3rd tap, then dispatches SMS, Email, and WhatsApp in the background.
-  Future<void> trigger({String notes = '', String source = 'app_button'}) async {
+  Future<void> trigger(
+      {String notes = '', String source = 'app_button'}) async {
     if (state.sending || state.active) return;
     _tapResetTimer?.cancel();
     _statusClearTimer?.cancel();
     _lastTapAt = null;
+    unawaited(SystemSound.play(SystemSoundType.alert));
+    unawaited(HapticFeedback.heavyImpact());
 
-    final store = _ref.read(storeProvider);
     final contacts = currentContacts();
     final seed = DateTime.now().millisecondsSinceEpoch.toRadixString(36);
     final localEventId = 'evt_$seed';
@@ -415,20 +534,21 @@ class SosController extends StateNotifier<SosState> {
     state = state.copyWith(
       sending: true,
       tapCount: 0,
-      statusMessage: 'Getting live GPS location & dispatching WhatsApp, SMS & Email alerts with Agora video link…',
+      statusMessage:
+          'Getting live GPS location & dispatching WhatsApp, SMS & Email alerts with Agora video link…',
     );
 
-    var lat = 12.9716;
-    var lng = 77.5946;
+    Position? position;
     try {
-      final pos = await _bestPosition();
-      lat = pos.latitude;
-      lng = pos.longitude;
+      position = await _bestPosition();
     } catch (_) {
-      // Fallback to baseline coordinates so SOS never fails indoors or when GPS is disabled.
+      // Keep the SOS available, but never send an unrelated location.
     }
 
-    final initialMapsUrl = 'https://maps.google.com/?q=$lat,$lng';
+    final lat = position?.latitude ?? 0.0;
+    final lng = position?.longitude ?? 0.0;
+    final initialMapsUrl =
+        position == null ? '' : 'https://maps.google.com/?q=$lat,$lng';
     final initialVideoUrl = Config.videoCallUrl(localRoomId);
     final initialEvent = SosEvent(
       eventId: localEventId,
@@ -448,61 +568,25 @@ class SosController extends StateNotifier<SosState> {
       resolving: false,
       tapCount: 0,
       notifiedContacts: contacts,
-      delivery: {
-        for (final c in contacts)
-          c.phone: {
-            'whatsapp': 'accepted',
-            'sms': 'accepted',
-            'email': 'sent',
-            'videoLink': initialVideoUrl,
-            'mapsLink': initialMapsUrl,
-          },
-      },
-      statusMessage: '✅ Emergency alerts submitted automatically.\n'
-          'WhatsApp accepted by Meta: ${contacts.length} | SOS SMS accepted: ${contacts.length} | Email sent: ${contacts.length}\n'
-          'Location shared: $initialMapsUrl\n'
+      statusMessage: 'SOS is active. Emergency notifications are being sent.\n'
+          'Location: ${initialMapsUrl.isEmpty ? 'waiting for a GPS fix' : initialMapsUrl}\n'
           'Agora Video Link: $initialVideoUrl',
     );
 
-    // Dispatch to backend (/api/sos + /api/send-emergency + /api/notifications/video-call-invite)
+    // The SOS endpoint owns delivery so saved contacts receive only one alert.
     try {
       final api = _ref.read(apiProvider);
-      final contactMaps = [for (final c in contacts) c.toJson()];
-
-      unawaited(
-        api
-            .sendEmergencyAlert(
-              eventId: localEventId,
-              roomId: localRoomId,
-              userName: store.patientName,
-              bloodGroup: store.bloodGroup,
-              medicalDetails: store.medicalDetailsSummary,
-              allergies: store.allergies,
-              conditions: store.conditions,
-              medications: store.medications,
-              lat: lat,
-              lng: lng,
-              contacts: contactMaps,
-            )
-            .catchError((_) => <String, dynamic>{}),
-      );
-
-      for (final c in contacts) {
-        unawaited(
-          api
-              .sendVideoCallInvite(
-                roomId: localRoomId,
-                name: c.name,
-                phone: c.phone,
-                email: c.email,
-              )
-              .catchError((_) => <String, dynamic>{}),
-        );
-      }
-
-      final res = await api
-          .sos(lat, lng, notes: notes, deviceId: _ref.read(devicesProvider).selected)
-          .timeout(const Duration(seconds: 6));
+      final res = await api.sos(position?.latitude, position?.longitude,
+          notes: notes,
+          deviceId: _ref.read(devicesProvider).selected,
+          userName: _ref.read(storeProvider).patientName,
+          bloodGroup: _ref.read(storeProvider).bloodGroup,
+          allergies: _profileValues(_ref.read(storeProvider).allergies),
+          conditions: _profileValues(_ref.read(storeProvider).conditions),
+          medications: _profileValues(_ref.read(storeProvider).medications),
+          contacts: [
+            for (final contact in currentContacts()) contact.toJson()
+          ]).timeout(const Duration(seconds: 6));
 
       if (state.active) {
         final serverRoom = res.roomId.isNotEmpty ? res.roomId : localRoomId;
@@ -519,9 +603,9 @@ class SosController extends StateNotifier<SosState> {
         );
         state = state.copyWith(
           event: updatedEvent,
-          statusMessage: '✅ Emergency alerts submitted automatically.\n'
-              'WhatsApp accepted by Meta: ${contacts.length} | SOS SMS accepted: ${contacts.length} | Email sent: ${contacts.length}\n'
-              'Location shared: $initialMapsUrl\n'
+          statusMessage:
+              'SOS is active. Emergency notifications are being sent.\n'
+              'Location: ${initialMapsUrl.isEmpty ? 'waiting for a GPS fix' : initialMapsUrl}\n'
               'Agora Video Link: $serverVideoUrl',
         );
         _startTracking(updatedEvent.eventId);
@@ -540,11 +624,14 @@ class SosController extends StateNotifier<SosState> {
 
     state = state.copyWith(
       resolving: true,
-      statusMessage: '⏳ Notifying your emergency contacts via WhatsApp, SMS & Email that you are safe…',
+      statusMessage:
+          '⏳ Notifying your emergency contacts via WhatsApp, SMS & Email that you are safe…',
     );
 
     final store = _ref.read(storeProvider);
-    final contacts = state.notifiedContacts.isNotEmpty ? state.notifiedContacts : currentContacts();
+    final contacts = state.notifiedContacts.isNotEmpty
+        ? state.notifiedContacts
+        : currentContacts();
     final contactMaps = [for (final c in contacts) c.toJson()];
     final api = _ref.read(apiProvider);
 
@@ -597,28 +684,44 @@ class SosController extends StateNotifier<SosState> {
 
   Future<Position> _bestPosition() async {
     var perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied) perm = await Geolocator.requestPermission();
-    final last = await Geolocator.getLastKnownPosition();
-    if (last != null && DateTime.now().difference(last.timestamp) < const Duration(minutes: 2)) return last;
-    try {
-      return await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 4)),
-      );
-    } catch (_) {
-      if (last != null) return last;
-      rethrow;
+    if (perm == LocationPermission.denied)
+      perm = await Geolocator.requestPermission();
+    if (perm == LocationPermission.denied ||
+        perm == LocationPermission.deniedForever ||
+        !await Geolocator.isLocationServiceEnabled()) {
+      throw StateError('Location permission or GPS is unavailable.');
     }
+    try {
+      final current = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 8)),
+      );
+      if (DateTime.now().difference(current.timestamp).inSeconds.abs() <= 30 &&
+          current.accuracy <= 500) return current;
+    } catch (_) {
+      // A recent cached fix may be used if the fresh request times out.
+    }
+    final last = await Geolocator.getLastKnownPosition();
+    if (last != null &&
+        DateTime.now().difference(last.timestamp).inSeconds.abs() <= 30 &&
+        last.accuracy <= 100) return last;
+    throw StateError('No recent GPS location is available.');
   }
 
   void _startTracking(String eventId) {
     _track?.cancel();
     DateTime lastSent = DateTime.fromMillisecondsSinceEpoch(0);
     _track = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 15),
+      locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high, distanceFilter: 15),
     ).listen((p) {
-      if (DateTime.now().difference(lastSent) < const Duration(seconds: 10)) return;
+      if (DateTime.now().difference(lastSent) < const Duration(seconds: 10))
+        return;
       lastSent = DateTime.now();
-      unawaited(_ref.read(apiProvider).sosLocation(eventId, p.latitude, p.longitude).catchError((_) {}));
+      unawaited(_ref
+          .read(apiProvider)
+          .sosLocation(eventId, p.latitude, p.longitude)
+          .catchError((_) {}));
     });
   }
 
@@ -632,6 +735,8 @@ class SosController extends StateNotifier<SosState> {
       case SosIncoming(:final event):
         // From the watch's hardware button (or another of the user's devices).
         if (state.event?.eventId != event.eventId) {
+          unawaited(SystemSound.play(SystemSoundType.alert));
+          unawaited(HapticFeedback.heavyImpact());
           final contacts = currentContacts();
           state = SosState(
             event: event,
@@ -642,7 +747,8 @@ class SosController extends StateNotifier<SosState> {
           );
         }
       case SosDelivery(:final eventId, :final results):
-        if (state.event?.eventId == eventId) state = state.copyWith(delivery: results);
+        if (state.event?.eventId == eventId)
+          state = state.copyWith(delivery: results);
       case SosResolved(:final eventId):
         if (state.event?.eventId == eventId && state.event != null) {
           _stopTracking();
@@ -654,7 +760,8 @@ class SosController extends StateNotifier<SosState> {
         }
       case SosLocationUpdate(:final eventId, :final lat, :final lng):
         if (state.event?.eventId == eventId && state.event != null) {
-          state = state.copyWith(event: state.event!.copyWith(lat: lat, lng: lng));
+          state =
+              state.copyWith(event: state.event!.copyWith(lat: lat, lng: lng));
         }
       default:
         break;
@@ -673,7 +780,8 @@ class SosController extends StateNotifier<SosState> {
   }
 }
 
-final sosProvider = StateNotifierProvider<SosController, SosState>((ref) => SosController(ref));
+final sosProvider =
+    StateNotifierProvider<SosController, SosState>((ref) => SosController(ref));
 
 // ── Assistant (RAG chat, streamed) ───────────────────────────────────────────────────────────────
 class ChatController extends StateNotifier<List<ChatMessage>> {
@@ -687,27 +795,45 @@ class ChatController extends StateNotifier<List<ChatMessage>> {
     final q = text.trim();
     if (q.isEmpty || busy) return;
     final history = [
-      for (final m in state.where((m) => !m.streaming && m.text.isNotEmpty)) {'role': m.fromUser ? 'user' : 'model', 'content': m.text},
+      for (final m in state.where((m) => !m.streaming && m.text.isNotEmpty))
+        {'role': m.fromUser ? 'user' : 'model', 'content': m.text},
     ];
-    state = [...state, ChatMessage(fromUser: true, text: q), const ChatMessage(fromUser: false, text: '', streaming: true)];
+    state = [
+      ...state,
+      ChatMessage(fromUser: true, text: q),
+      const ChatMessage(fromUser: false, text: '', streaming: true)
+    ];
 
     final api = _ref.read(apiProvider);
-    final client = _active = http.Client(); // separate client so cancel() can abort just this stream
+    final client = _active =
+        http.Client(); // separate client so cancel() can abort just this stream
     final parser = SseParser();
     try {
       final req = http.Request('POST', api.uri('/api/assistant/chat'))
         ..headers.addAll(await api.headers())
         ..headers['Accept'] = 'text/event-stream'
-        ..body = jsonEncode({'message': q, 'history': history.length > 16 ? history.sublist(history.length - 16) : history, 'device_id': _ref.read(devicesProvider).selected});
+        ..body = jsonEncode({
+          'message': q,
+          'history': history.length > 16
+              ? history.sublist(history.length - 16)
+              : history,
+          'device_id': _ref.read(devicesProvider).selected
+        });
       final res = await client.send(req).timeout(const Duration(seconds: 20));
-      if (res.statusCode >= 400) throw ApiException(res.statusCode, 'Assistant error (${res.statusCode})');
+      if (res.statusCode >= 400)
+        throw ApiException(
+            res.statusCode, 'Assistant error (${res.statusCode})');
       await for (final chunk in res.stream.transform(utf8.decoder)) {
         for (final ev in parser.add(chunk)) {
           _apply(ev);
         }
       }
     } catch (e) {
-      if (_active == client) _patch((m) => m.copyWith(text: m.text.isEmpty ? 'Could not reach the assistant. Check your connection and try again.' : m.text));
+      if (_active == client)
+        _patch((m) => m.copyWith(
+            text: m.text.isEmpty
+                ? 'Could not reach the assistant. Check your connection and try again.'
+                : m.text));
     } finally {
       client.close();
       if (_active == client) _active = null;
@@ -731,7 +857,8 @@ class ChatController extends StateNotifier<List<ChatMessage>> {
       case EmergencyEvent():
         _patch((m) => m.copyWith(emergency: true));
       case MetaEvent(:final sources, :final emergency):
-        _patch((m) => m.copyWith(sources: sources, emergency: m.emergency || emergency));
+        _patch((m) =>
+            m.copyWith(sources: sources, emergency: m.emergency || emergency));
       case TokenEvent(:final text):
         _patch((m) => m.copyWith(text: m.text + text));
       case TimingEvent(:final firstTokenMs):
@@ -749,7 +876,9 @@ class ChatController extends StateNotifier<List<ChatMessage>> {
   }
 }
 
-final chatProvider = StateNotifierProvider<ChatController, List<ChatMessage>>((ref) => ChatController(ref));
+final chatProvider = StateNotifierProvider<ChatController, List<ChatMessage>>(
+    (ref) => ChatController(ref));
 
 // ── History ──────────────────────────────────────────────────────────────────────────────────────
-final historyProvider = FutureProvider.autoDispose<List<Reading>>((ref) => ref.watch(apiProvider).history(limit: 200));
+final historyProvider = FutureProvider.autoDispose<List<Reading>>(
+    (ref) => ref.watch(apiProvider).history(limit: 200));

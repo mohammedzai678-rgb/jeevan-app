@@ -138,6 +138,8 @@ async def chat(body: ChatBody, request: Request, user: User = Depends(current_us
                     yield _sse("token", {"t": token})
             except Exception as exc:  # noqa: BLE001 - never leave the user without an answer
                 log.warning("LLM failed, using extractive fallback: %s", exc)
+                if produced:
+                    yield _sse("token", {"t": "\n\nThe connection interrupted this answer. Please retry to receive the complete guidance."})
         if not produced:
             yield _sse("token", {"t": llm.extractive_answer(hits, emergency)})
             yield _sse("fallback", {"reason": "llm_unavailable" if not ctx.settings.gemini_api_key else "llm_error"})

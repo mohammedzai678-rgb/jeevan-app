@@ -13,7 +13,8 @@ class ClinicalToolsScreen extends ConsumerStatefulWidget {
   final int initialTab;
 
   @override
-  ConsumerState<ClinicalToolsScreen> createState() => _ClinicalToolsScreenState();
+  ConsumerState<ClinicalToolsScreen> createState() =>
+      _ClinicalToolsScreenState();
 }
 
 class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
@@ -35,12 +36,36 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
   ];
 
   static const _tabs = <({String label, IconData icon, Color accent})>[
-    (label: 'Symptom Triage', icon: Icons.medical_information_rounded, accent: Palette.teal),
-    (label: 'MediScan (Lab & Rx)', icon: Icons.biotech_rounded, accent: Palette.blue),
-    (label: 'OpenFDA Interactions', icon: Icons.medication_liquid_rounded, accent: Palette.amber),
-    (label: 'Medicine Analyzer', icon: Icons.vaccines_rounded, accent: Palette.green),
-    (label: 'Mental Wellbeing', icon: Icons.self_improvement_rounded, accent: Palette.orange),
-    (label: 'AI Radiology Imaging', icon: Icons.collections_bookmark_rounded, accent: Palette.red),
+    (
+      label: 'Symptom Triage',
+      icon: Icons.medical_information_rounded,
+      accent: Palette.teal
+    ),
+    (
+      label: 'MediScan (Lab & Rx)',
+      icon: Icons.biotech_rounded,
+      accent: Palette.blue
+    ),
+    (
+      label: 'OpenFDA Interactions',
+      icon: Icons.medication_liquid_rounded,
+      accent: Palette.amber
+    ),
+    (
+      label: 'Medicine Analyzer',
+      icon: Icons.vaccines_rounded,
+      accent: Palette.green
+    ),
+    (
+      label: 'Mental Wellbeing',
+      icon: Icons.self_improvement_rounded,
+      accent: Palette.orange
+    ),
+    (
+      label: 'AI Radiology Imaging',
+      icon: Icons.collections_bookmark_rounded,
+      accent: Palette.red
+    ),
   ];
 
   // ── 1. Symptom Triage & Body Region State ──────────────────────────────────
@@ -89,9 +114,7 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
   final _drug2Ctrl = TextEditingController();
   final _medicineCtrl = TextEditingController();
   final _wellbeingCtrl = TextEditingController();
-  final _radiologyContextCtrl = TextEditingController(
-    text: 'Persistent cough with fever and mild dyspnea for 4 days; evaluate for consolidation or effusion.',
-  );
+  final _radiologyContextCtrl = TextEditingController();
 
   // ── 6. AI Radiology Imaging State ──────────────────────────────────────────
   static const _imagingModalities = <String>[
@@ -158,7 +181,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {
-      if (mounted) showSnack(context, 'Unable to open dialer for $number', error: true);
+      if (mounted)
+        showSnack(context, 'Unable to open dialer for $number', error: true);
     }
   }
 
@@ -169,7 +193,9 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     if (_symptomBusy) return;
     final symptomsList = _selectedSymptoms.isNotEmpty
         ? _selectedSymptoms.toList()
-        : (_symptomCtrl.text.trim().isNotEmpty ? [_symptomCtrl.text.trim()] : ['Pain']);
+        : (_symptomCtrl.text.trim().isNotEmpty
+            ? [_symptomCtrl.text.trim()]
+            : ['Pain']);
 
     FocusScope.of(context).unfocus();
     setState(() => _symptomBusy = true);
@@ -224,7 +250,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
       _mediScanFeedbackReward = null;
     });
     try {
-      final res = await ref.read(apiProvider).aiMediScan(text, language: _language);
+      final res =
+          await ref.read(apiProvider).aiMediScan(text, language: _language);
       if (!mounted) return;
       setState(() => _mediScanResult = res);
     } catch (e) {
@@ -240,7 +267,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     final drug1 = _drug1Ctrl.text.trim();
     final drug2 = _drug2Ctrl.text.trim();
     if (drug1.isEmpty || drug2.isEmpty) {
-      showSnack(context, 'Enter both Drug A and Drug B to check interactions.', error: true);
+      showSnack(context, 'Enter both Drug A and Drug B to check interactions.',
+          error: true);
       return;
     }
     if (_fdaBusy) return;
@@ -264,7 +292,9 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     FocusScope.of(context).unfocus();
     setState(() => _medicineBusy = true);
     try {
-      final res = await ref.read(apiProvider).aiMedicineAnalyzer(text, language: _language);
+      final res = await ref
+          .read(apiProvider)
+          .aiMedicineAnalyzer(text, language: _language);
       if (!mounted) return;
       setState(() => _medicineResult = res);
     } catch (e) {
@@ -281,7 +311,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     FocusScope.of(context).unfocus();
     setState(() => _wellbeingBusy = true);
     try {
-      final res = await ref.read(apiProvider).aiWellbeing(text, language: _language);
+      final res =
+          await ref.read(apiProvider).aiWellbeing(text, language: _language);
       if (!mounted) return;
       setState(() => _wellbeingResult = res);
     } catch (e) {
@@ -291,7 +322,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     }
   }
 
-  Future<void> _runDiagnosticImaging([String? presetModality, String? presetRegion, String? presetContext]) async {
+  Future<void> _runDiagnosticImaging(
+      [String? presetModality,
+      String? presetRegion,
+      String? presetContext]) async {
     if (presetModality != null) _selectedModality = presetModality;
     if (presetRegion != null) _selectedImagingRegion = presetRegion;
     if (presetContext != null) _radiologyContextCtrl.text = presetContext;
@@ -326,7 +360,9 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     setState(() => _sendingFeedback = true);
     try {
       await ref.read(apiProvider).mediscanFeedback(
-            logId: logId.isEmpty ? 'log_${DateTime.now().millisecondsSinceEpoch}' : logId,
+            logId: logId.isEmpty
+                ? 'log_${DateTime.now().millisecondsSinceEpoch}'
+                : logId,
             reward: reward,
           );
       if (!mounted) return;
@@ -369,7 +405,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               child: DropdownButton<String>(
                 value: _language,
                 dropdownColor: Palette.surfaceHi,
-                icon: const Icon(Icons.translate_rounded, size: 15, color: Palette.teal),
+                icon: const Icon(Icons.translate_rounded,
+                    size: 15, color: Palette.teal),
                 style: const TextStyle(
                   color: Palette.text,
                   fontSize: 12,
@@ -439,7 +476,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               duration: const Duration(milliseconds: 180),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
               decoration: BoxDecoration(
-                color: selected ? tab.accent.withOpacity(0.18) : Palette.surface,
+                color:
+                    selected ? tab.accent.withOpacity(0.18) : Palette.surface,
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
                   color: selected ? tab.accent : Palette.outline,
@@ -497,14 +535,18 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             children: [
               const Text(
                 'Select the affected anatomical body region, multi-select active symptoms, adjust severity (1–10), and run P1–P4 emergency triage.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 13.5, height: 1.4),
               ),
               const SizedBox(height: 14),
 
               // Body Region Selector
               const Text(
                 '1. Select Body Region',
-                style: TextStyle(color: Palette.teal, fontSize: 12.5, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                    color: Palette.teal,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -518,14 +560,19 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       selectedColor: Palette.teal.withOpacity(0.22),
                       backgroundColor: Palette.surfaceHi,
                       labelStyle: TextStyle(
-                        color: _selectedBodyRegion == region ? Palette.teal : Palette.text,
+                        color: _selectedBodyRegion == region
+                            ? Palette.teal
+                            : Palette.text,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
                       side: BorderSide(
-                        color: _selectedBodyRegion == region ? Palette.teal : Palette.outline,
+                        color: _selectedBodyRegion == region
+                            ? Palette.teal
+                            : Palette.outline,
                       ),
-                      onSelected: (_) => setState(() => _selectedBodyRegion = region),
+                      onSelected: (_) =>
+                          setState(() => _selectedBodyRegion = region),
                     ),
                 ],
               ),
@@ -535,7 +582,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               // Multi-select Symptom Chips
               const Text(
                 '2. Select Active Symptoms (Multi-Select)',
-                style: TextStyle(color: Palette.teal, fontSize: 12.5, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                    color: Palette.teal,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -550,12 +600,16 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       checkmarkColor: Palette.blue,
                       backgroundColor: Palette.surfaceHi,
                       labelStyle: TextStyle(
-                        color: _selectedSymptoms.contains(sym) ? Palette.blue : Palette.text,
+                        color: _selectedSymptoms.contains(sym)
+                            ? Palette.blue
+                            : Palette.text,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
                       side: BorderSide(
-                        color: _selectedSymptoms.contains(sym) ? Palette.blue : Palette.outline,
+                        color: _selectedSymptoms.contains(sym)
+                            ? Palette.blue
+                            : Palette.outline,
                       ),
                       onSelected: (v) {
                         setState(() {
@@ -583,10 +637,14 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                           children: [
                             const Text(
                               '3. Severity: ',
-                              style: TextStyle(color: Palette.teal, fontSize: 12.5, fontWeight: FontWeight.w800),
+                              style: TextStyle(
+                                  color: Palette.teal,
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w800),
                             ),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
                               decoration: BoxDecoration(
                                 color: severityColor.withOpacity(0.16),
                                 borderRadius: BorderRadius.circular(999),
@@ -622,10 +680,14 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       dropdownColor: Palette.surfaceHi,
                       decoration: const InputDecoration(
                         labelText: 'Duration',
-                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       ),
                       items: _durations
-                          .map((d) => DropdownMenuItem(value: d, child: Text(d, style: const TextStyle(fontSize: 12.5))))
+                          .map((d) => DropdownMenuItem(
+                              value: d,
+                              child: Text(d,
+                                  style: const TextStyle(fontSize: 12.5))))
                           .toList(),
                       onChanged: (v) {
                         if (v != null) setState(() => _selectedDuration = v);
@@ -642,14 +704,18 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 maxLines: 4,
                 decoration: const InputDecoration(
                   labelText: 'Additional clinical details or vitals context',
-                  hintText: 'e.g., Sudden chest tightness radiating to left arm for 20 minutes…',
+                  hintText:
+                      'e.g., Sudden chest tightness radiating to left arm for 20 minutes…',
                   alignLabelWithHint: true,
                 ),
               ),
               const SizedBox(height: 12),
               const Text(
                 'Quick Samples',
-                style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -669,15 +735,19 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 children: [
                   Expanded(
                     child: FilledButton.icon(
-                      onPressed: _symptomBusy ? null : () => _runBodySymptomCheck(),
+                      onPressed:
+                          _symptomBusy ? null : () => _runBodySymptomCheck(),
                       icon: _symptomBusy
                           ? const SizedBox(
                               width: 18,
                               height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2.2, color: Color(0xFF042F2A)),
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2.2, color: Color(0xFF042F2A)),
                             )
                           : const Icon(Icons.accessibility_new_rounded),
-                      label: Text(_symptomBusy ? 'Running Body Triage…' : 'Run Body Symptom Check'),
+                      label: Text(_symptomBusy
+                          ? 'Running Body Triage…'
+                          : 'Run Body Symptom Check'),
                     ),
                   ),
                 ],
@@ -687,8 +757,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   onPressed: _symptomBusy ? null : _runQuickTriage,
-                  icon: const Icon(Icons.bolt_rounded, size: 18, color: Palette.amber),
-                  label: const Text('Run Rapid Emergency Triage (/api/gemini/triage)'),
+                  icon: const Icon(Icons.bolt_rounded,
+                      size: 18, color: Palette.amber),
+                  label: const Text(
+                      'Run Rapid Emergency Triage (/api/gemini/triage)'),
                 ),
               ),
             ],
@@ -709,11 +781,21 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
   }
 
   Widget _buildStructuredSymptomResult(Map<String, dynamic> res) {
-    final urgency = '${res['urgencyLevel'] ?? res['triageLevel'] ?? (res['emergency'] == true ? 'P1' : 'P3')}'.toUpperCase();
-    final summary = '${res['assessmentSummary'] ?? res['summary'] ?? ''}'.trim();
-    final careNow = ((res['careNow'] ?? res['immediateActions']) as List?)?.map((e) => '$e').toList() ?? const [];
-    final whatToAvoid = ((res['whatToAvoid']) as List?)?.map((e) => '$e').toList() ?? const [];
-    final whenToWorry = ((res['whenToWorry'] ?? res['redFlags']) as List?)?.map((e) => '$e').toList() ?? const [];
+    final urgency =
+        '${res['urgencyLevel'] ?? res['triageLevel'] ?? (res['emergency'] == true ? 'P1' : 'P3')}'
+            .toUpperCase();
+    final summary =
+        '${res['assessmentSummary'] ?? res['summary'] ?? ''}'.trim();
+    final careNow = ((res['careNow'] ?? res['immediateActions']) as List?)
+            ?.map((e) => '$e')
+            .toList() ??
+        const [];
+    final whatToAvoid =
+        ((res['whatToAvoid']) as List?)?.map((e) => '$e').toList() ?? const [];
+    final whenToWorry = ((res['whenToWorry'] ?? res['redFlags']) as List?)
+            ?.map((e) => '$e')
+            .toList() ??
+        const [];
     final breakdown = ((res['symptomBreakdown']) as List?)
             ?.whereType<Map>()
             .map((e) => e.cast<String, dynamic>())
@@ -721,18 +803,20 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
         const [];
 
     final (Color uColor, String uLabel) = switch (urgency) {
-      final s when s.startsWith('P1') || s.contains('CRITICAL') || s.contains('EMERGENCY') => (
-        Palette.red,
-        'P1 • IMMEDIATE EMERGENCY'
-      ),
-      final s when s.startsWith('P2') || s.contains('URGENT') || s.contains('HIGH') => (
-        Palette.orange,
-        'P2 • URGENT MEDICAL EVALUATION'
-      ),
+      final s
+          when s.startsWith('P1') ||
+              s.contains('CRITICAL') ||
+              s.contains('EMERGENCY') =>
+        (Palette.red, 'P1 • IMMEDIATE EMERGENCY'),
+      final s
+          when s.startsWith('P2') ||
+              s.contains('URGENT') ||
+              s.contains('HIGH') =>
+        (Palette.orange, 'P2 • URGENT MEDICAL EVALUATION'),
       final s when s.startsWith('P3') || s.contains('MODERATE') => (
-        Palette.amber,
-        'P3 • SEMI-URGENT OPD CONSULT'
-      ),
+          Palette.amber,
+          'P3 • SEMI-URGENT OPD CONSULT'
+        ),
       _ => (Palette.green, 'P4 • NON-URGENT / HOME CARE'),
     };
 
@@ -744,7 +828,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           Row(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: uColor.withOpacity(0.18),
                   borderRadius: BorderRadius.circular(999),
@@ -770,7 +855,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const Spacer(),
               Text(
                 _selectedBodyRegion,
-                style: const TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
             ],
           ),
@@ -778,7 +866,11 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             const SizedBox(height: 12),
             Text(
               summary,
-              style: const TextStyle(color: Palette.text, fontSize: 14, height: 1.45, fontWeight: FontWeight.w600),
+              style: const TextStyle(
+                  color: Palette.text,
+                  fontSize: 14,
+                  height: 1.45,
+                  fontWeight: FontWeight.w600),
             ),
           ],
           if (careNow.isNotEmpty) ...[
@@ -812,7 +904,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             const SizedBox(height: 14),
             const Text(
               'Per-Symptom Clinical Breakdown',
-              style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w800),
+              style: TextStyle(
+                  color: Palette.textDim,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             for (final item in breakdown)
@@ -830,7 +925,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                     children: [
                       Row(
                         children: [
-                          const Icon(Icons.radar_rounded, size: 15, color: Palette.blue),
+                          const Icon(Icons.radar_rounded,
+                              size: 15, color: Palette.blue),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
@@ -844,16 +940,25 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                           ),
                           if (item['possibleCauses'] is List)
                             Text(
-                              (item['possibleCauses'] as List).take(2).join(', '),
-                              style: const TextStyle(color: Palette.teal, fontSize: 11.5, fontWeight: FontWeight.w700),
+                              (item['possibleCauses'] as List)
+                                  .take(2)
+                                  .join(', '),
+                              style: const TextStyle(
+                                  color: Palette.teal,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700),
                             ),
                         ],
                       ),
-                      if (item['explanation'] != null || item['clinicalNote'] != null) ...[
+                      if (item['explanation'] != null ||
+                          item['clinicalNote'] != null) ...[
                         const SizedBox(height: 4),
                         Text(
                           '${item['explanation'] ?? item['clinicalNote']}',
-                          style: const TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.35),
+                          style: const TextStyle(
+                              color: Palette.textDim,
+                              fontSize: 12.5,
+                              height: 1.35),
                         ),
                       ],
                     ],
@@ -869,7 +974,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
   // ── 2. MediScan (Lab & Rx) ──────────────────────────────────────────────────
   Widget _buildMediScanTab() {
     const sampleLab = 'Hb 9.2 g/dL, WBC 13,500, Fasting Glucose 148 mg/dL';
-    const sampleRx = 'Tab Telmisartan 40mg OD, Tab Atorvastatin 20mg HS, Cap Ecosprin 75mg OD';
+    const sampleRx =
+        'Tab Telmisartan 40mg OD, Tab Atorvastatin 20mg HS, Cap Ecosprin 75mg OD';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -881,7 +987,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             children: [
               const Text(
                 'Paste blood work panels, diagnostic lab values, or discharge prescription text for plain-language clinical interpretation and reference ranges.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 13.5, height: 1.4),
               ),
               const SizedBox(height: 14),
               TextField(
@@ -897,7 +1004,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 12),
               const Text(
                 'Quick Samples',
-                style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -919,15 +1029,19 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _mediScanBusy ? null : () => _runMediScan(),
-                style: FilledButton.styleFrom(backgroundColor: Palette.blue, foregroundColor: Palette.bg),
+                style: FilledButton.styleFrom(
+                    backgroundColor: Palette.blue, foregroundColor: Palette.bg),
                 icon: _mediScanBusy
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2.2, color: Palette.bg),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.2, color: Palette.bg),
                       )
                     : const Icon(Icons.biotech_rounded),
-                label: Text(_mediScanBusy ? 'Analyzing Report…' : 'Analyze with MediScan'),
+                label: Text(_mediScanBusy
+                    ? 'Analyzing Report…'
+                    : 'Analyze with MediScan'),
               ),
             ],
           ),
@@ -941,7 +1055,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           ),
           const SizedBox(height: 10),
           _buildRlhfFeedbackBar(
-            logId: '${_mediScanResult!['logId'] ?? _mediScanResult!['id'] ?? 'mediscan_log'}',
+            logId:
+                '${_mediScanResult!['logId'] ?? _mediScanResult!['id'] ?? 'mediscan_log'}',
             selectedReward: _mediScanFeedbackReward,
             isRadiology: false,
           ),
@@ -968,7 +1083,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             children: [
               const Text(
                 'Query official US FDA drug adverse-event & clinical interaction records before combining prescription or OTC medications.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 13.5, height: 1.4),
               ),
               const SizedBox(height: 14),
               Row(
@@ -980,13 +1096,15 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Drug A',
                         hintText: 'e.g., Aspirin',
-                        prefixIcon: Icon(Icons.medication_rounded, color: Palette.amber),
+                        prefixIcon: Icon(Icons.medication_rounded,
+                            color: Palette.amber),
                       ),
                     ),
                   ),
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 10),
-                    child: Icon(Icons.compare_arrows_rounded, color: Palette.textDim),
+                    child: Icon(Icons.compare_arrows_rounded,
+                        color: Palette.textDim),
                   ),
                   Expanded(
                     child: TextField(
@@ -996,7 +1114,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       decoration: const InputDecoration(
                         labelText: 'Drug B',
                         hintText: 'e.g., Warfarin',
-                        prefixIcon: Icon(Icons.medication_liquid_rounded, color: Palette.amber),
+                        prefixIcon: Icon(Icons.medication_liquid_rounded,
+                            color: Palette.amber),
                       ),
                     ),
                   ),
@@ -1005,7 +1124,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 12),
               const Text(
                 'Quick Pair Checks',
-                style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1023,15 +1145,19 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _fdaBusy ? null : () => _runFdaInteractions(),
-                style: FilledButton.styleFrom(backgroundColor: Palette.amber, foregroundColor: Palette.bg),
+                style: FilledButton.styleFrom(
+                    backgroundColor: Palette.amber,
+                    foregroundColor: Palette.bg),
                 icon: _fdaBusy
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2.2, color: Palette.bg),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.2, color: Palette.bg),
                       )
                     : const Icon(Icons.verified_user_rounded),
-                label: Text(_fdaBusy ? 'Checking OpenFDA…' : 'Check Drug Interaction'),
+                label: Text(
+                    _fdaBusy ? 'Checking OpenFDA…' : 'Check Drug Interaction'),
               ),
             ],
           ),
@@ -1049,10 +1175,13 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     final drug2 = '${res['drug2'] ?? _drug2Ctrl.text}'.trim();
     final severity = '${res['severity'] ?? 'none'}'.toLowerCase();
     final hasInteraction = res['hasInteraction'] == true;
-    final interactions = ((res['interactions'] as List?) ?? const []).map((e) => '$e').toList();
-    final disclaimer = '${res['disclaimer'] ?? 'Data sourced from OpenFDA & clinical interaction knowledge base. Always consult a licensed pharmacist or physician.'}';
+    final interactions =
+        ((res['interactions'] as List?) ?? const []).map((e) => '$e').toList();
+    final disclaimer =
+        '${res['disclaimer'] ?? 'Data sourced from OpenFDA & clinical interaction knowledge base. Always consult a licensed pharmacist or physician.'}';
 
-    final (Color badgeColor, String badgeLabel, IconData badgeIcon) = switch (severity) {
+    final (Color badgeColor, String badgeLabel, IconData badgeIcon) =
+        switch (severity) {
       'critical' => (Palette.red, 'CRITICAL', Icons.dangerous_rounded),
       'high' => (Palette.orange, 'HIGH', Icons.warning_amber_rounded),
       'moderate' => (Palette.amber, 'MODERATE', Icons.info_outline_rounded),
@@ -1083,18 +1212,25 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   children: [
                     Text(
                       '$drug1 + $drug2',
-                      style: const TextStyle(color: Palette.text, fontSize: 16.5, fontWeight: FontWeight.w800),
+                      style: const TextStyle(
+                          color: Palette.text,
+                          fontSize: 16.5,
+                          fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      hasInteraction ? 'Clinically significant interaction detected' : 'No major interaction flagged',
-                      style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                      hasInteraction
+                          ? 'Clinically significant interaction detected'
+                          : 'No major interaction flagged',
+                      style: const TextStyle(
+                          color: Palette.textDim, fontSize: 12.5),
                     ),
                   ],
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
                 decoration: BoxDecoration(
                   color: badgeColor.withOpacity(0.16),
                   borderRadius: BorderRadius.circular(999),
@@ -1137,13 +1273,17 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                         children: [
                           Padding(
                             padding: const EdgeInsets.only(top: 2),
-                            child: Icon(Icons.arrow_right_rounded, color: badgeColor, size: 20),
+                            child: Icon(Icons.arrow_right_rounded,
+                                color: badgeColor, size: 20),
                           ),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
                               item,
-                              style: const TextStyle(color: Palette.text, fontSize: 13.8, height: 1.45),
+                              style: const TextStyle(
+                                  color: Palette.text,
+                                  fontSize: 13.8,
+                                  height: 1.45),
                             ),
                           ),
                         ],
@@ -1156,12 +1296,14 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.policy_outlined, size: 15, color: Palette.textDim),
+              const Icon(Icons.policy_outlined,
+                  size: 15, color: Palette.textDim),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
                   disclaimer,
-                  style: const TextStyle(color: Palette.textDim, fontSize: 11.5, height: 1.35),
+                  style: const TextStyle(
+                      color: Palette.textDim, fontSize: 11.5, height: 1.35),
                 ),
               ),
             ],
@@ -1190,7 +1332,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             children: [
               const Text(
                 'Enter any brand name, generic drug, or active salt composition to inspect active ingredients, side effects with severity, and Ayurvedic & Natural Alternatives.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 13.5, height: 1.4),
               ),
               const SizedBox(height: 14),
               TextField(
@@ -1199,14 +1342,19 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 onSubmitted: (_) => _runMedicineAnalyzer(),
                 decoration: const InputDecoration(
                   labelText: 'Medicine name or active salts',
-                  hintText: 'e.g., Metformin 500mg or Amoxicillin + Clavulanate',
-                  prefixIcon: Icon(Icons.vaccines_rounded, color: Palette.green),
+                  hintText:
+                      'e.g., Metformin 500mg or Amoxicillin + Clavulanate',
+                  prefixIcon:
+                      Icon(Icons.vaccines_rounded, color: Palette.green),
                 ),
               ),
               const SizedBox(height: 12),
               const Text(
                 'Quick Lookups',
-                style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1224,15 +1372,20 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _medicineBusy ? null : () => _runMedicineAnalyzer(),
-                style: FilledButton.styleFrom(backgroundColor: Palette.green, foregroundColor: Palette.bg),
+                style: FilledButton.styleFrom(
+                    backgroundColor: Palette.green,
+                    foregroundColor: Palette.bg),
                 icon: _medicineBusy
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2.2, color: Palette.bg),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.2, color: Palette.bg),
                       )
                     : const Icon(Icons.science_rounded),
-                label: Text(_medicineBusy ? 'Analyzing Composition…' : 'Analyze Medicine & AYUSH Options'),
+                label: Text(_medicineBusy
+                    ? 'Analyzing Composition…'
+                    : 'Analyze Medicine & AYUSH Options'),
               ),
             ],
           ),
@@ -1252,9 +1405,12 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
   }
 
   Widget _buildStructuredMedicineBreakdown(Map<String, dynamic> res) {
-    final ingredients = ((res['ingredients'] ?? res['activeIngredients']) as List?) ?? const [];
+    final ingredients =
+        ((res['ingredients'] ?? res['activeIngredients']) as List?) ?? const [];
     final sideEffects = ((res['sideEffects']) as List?) ?? const [];
-    final ayurvedic = ((res['ayurvedicAlternatives'] ?? res['naturalAlternatives']) as List?) ?? const [];
+    final ayurvedic = ((res['ayurvedicAlternatives'] ??
+            res['naturalAlternatives']) as List?) ??
+        const [];
 
     if (ingredients.isEmpty && sideEffects.isEmpty && ayurvedic.isEmpty) {
       return const SizedBox.shrink();
@@ -1277,7 +1433,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                     SizedBox(width: 8),
                     Text(
                       'Active Pharmaceutical Ingredients (Salts)',
-                      style: TextStyle(color: Palette.text, fontSize: 14.5, fontWeight: FontWeight.w800),
+                      style: TextStyle(
+                          color: Palette.text,
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w800),
                     ),
                   ],
                 ),
@@ -1305,19 +1464,23 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
-                                if (ing['purpose'] != null || ing['mechanism'] != null || ing['description'] != null)
+                                if (ing['purpose'] != null ||
+                                    ing['mechanism'] != null ||
+                                    ing['description'] != null)
                                   Padding(
                                     padding: const EdgeInsets.only(top: 3),
                                     child: Text(
                                       '${ing['purpose'] ?? ing['mechanism'] ?? ing['description']}',
-                                      style: const TextStyle(color: Palette.textDim, fontSize: 12),
+                                      style: const TextStyle(
+                                          color: Palette.textDim, fontSize: 12),
                                     ),
                                   ),
                               ],
                             )
                           : Text(
                               '• $ing',
-                              style: const TextStyle(color: Palette.text, fontSize: 13),
+                              style: const TextStyle(
+                                  color: Palette.text, fontSize: 13),
                             ),
                     ),
                   ),
@@ -1336,11 +1499,15 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               children: [
                 const Row(
                   children: [
-                    Icon(Icons.warning_amber_rounded, color: Palette.amber, size: 18),
+                    Icon(Icons.warning_amber_rounded,
+                        color: Palette.amber, size: 18),
                     SizedBox(width: 8),
                     Text(
                       'Adverse Effects & Severity Profile',
-                      style: TextStyle(color: Palette.text, fontSize: 14.5, fontWeight: FontWeight.w800),
+                      style: TextStyle(
+                          color: Palette.text,
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w800),
                     ),
                   ],
                 ),
@@ -1352,15 +1519,22 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                     for (final se in sideEffects)
                       Builder(
                         builder: (context) {
-                          final name = se is Map ? '${se['effect'] ?? se['name'] ?? se}' : '$se';
-                          final sev = se is Map ? '${se['severity'] ?? se['frequency'] ?? 'moderate'}'.toLowerCase() : 'common';
-                          final c = sev.contains('severe') || sev.contains('high')
-                              ? Palette.red
-                              : sev.contains('mod')
-                                  ? Palette.amber
-                                  : Palette.blue;
+                          final name = se is Map
+                              ? '${se['effect'] ?? se['name'] ?? se}'
+                              : '$se';
+                          final sev = se is Map
+                              ? '${se['severity'] ?? se['frequency'] ?? 'moderate'}'
+                                  .toLowerCase()
+                              : 'common';
+                          final c =
+                              sev.contains('severe') || sev.contains('high')
+                                  ? Palette.red
+                                  : sev.contains('mod')
+                                      ? Palette.amber
+                                      : Palette.blue;
                           return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 11, vertical: 7),
                             decoration: BoxDecoration(
                               color: c.withOpacity(0.14),
                               borderRadius: BorderRadius.circular(12),
@@ -1371,12 +1545,18 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                               children: [
                                 Text(
                                   name,
-                                  style: const TextStyle(color: Palette.text, fontSize: 12.5, fontWeight: FontWeight.w700),
+                                  style: const TextStyle(
+                                      color: Palette.text,
+                                      fontSize: 12.5,
+                                      fontWeight: FontWeight.w700),
                                 ),
                                 const SizedBox(width: 6),
                                 Text(
                                   sev.toUpperCase(),
-                                  style: TextStyle(color: c, fontSize: 10, fontWeight: FontWeight.w800),
+                                  style: TextStyle(
+                                      color: c,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w800),
                                 ),
                               ],
                             ),
@@ -1406,7 +1586,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                     Expanded(
                       child: Text(
                         'Ayurvedic & Natural Supportive Alternatives (AYUSH)',
-                        style: TextStyle(color: Palette.text, fontSize: 14.5, fontWeight: FontWeight.w800),
+                        style: TextStyle(
+                            color: Palette.text,
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w800),
                       ),
                     ),
                   ],
@@ -1421,7 +1604,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       decoration: BoxDecoration(
                         color: Palette.surfaceHi,
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Palette.teal.withOpacity(0.32)),
+                        border:
+                            Border.all(color: Palette.teal.withOpacity(0.32)),
                       ),
                       child: alt is Map
                           ? Column(
@@ -1435,19 +1619,25 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                                     fontWeight: FontWeight.w800,
                                   ),
                                 ),
-                                if (alt['benefit'] != null || alt['description'] != null || alt['usage'] != null)
+                                if (alt['benefit'] != null ||
+                                    alt['description'] != null ||
+                                    alt['usage'] != null)
                                   Padding(
                                     padding: const EdgeInsets.only(top: 4),
                                     child: Text(
                                       '${alt['benefit'] ?? alt['description'] ?? alt['usage']}',
-                                      style: const TextStyle(color: Palette.text, fontSize: 12.5, height: 1.35),
+                                      style: const TextStyle(
+                                          color: Palette.text,
+                                          fontSize: 12.5,
+                                          height: 1.35),
                                     ),
                                   ),
                               ],
                             )
                           : Text(
                               '• $alt',
-                              style: const TextStyle(color: Palette.text, fontSize: 13),
+                              style: const TextStyle(
+                                  color: Palette.text, fontSize: 13),
                             ),
                     ),
                   ),
@@ -1467,10 +1657,26 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
       'Guided 4-7-8 breathing exercise for acute stress',
     ];
 
-    const helplines = <({String name, String subtitle, String number, Color color})>[
-      (name: 'iCall (TISS)', subtitle: 'Psychosocial helpline', number: '9152987821', color: Palette.teal),
-      (name: 'Vandrevala Foundation', subtitle: '24/7 crisis & mental health support', number: '1860-2662-345', color: Palette.blue),
-      (name: 'National Emergency', subtitle: 'Immediate emergency dispatch', number: '112', color: Palette.red),
+    const helplines =
+        <({String name, String subtitle, String number, Color color})>[
+      (
+        name: 'iCall (TISS)',
+        subtitle: 'Psychosocial helpline',
+        number: '9152987821',
+        color: Palette.teal
+      ),
+      (
+        name: 'Vandrevala Foundation',
+        subtitle: '24/7 crisis & mental health support',
+        number: '1860-2662-345',
+        color: Palette.blue
+      ),
+      (
+        name: 'National Emergency',
+        subtitle: 'Immediate emergency dispatch',
+        number: '112',
+        color: Palette.red
+      ),
     ];
 
     return Column(
@@ -1499,7 +1705,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       color: Palette.orange.withOpacity(0.18),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.support_agent_rounded, color: Palette.orange, size: 20),
+                    child: const Icon(Icons.support_agent_rounded,
+                        color: Palette.orange, size: 20),
                   ),
                   const SizedBox(width: 10),
                   const Expanded(
@@ -1508,12 +1715,16 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       children: [
                         Text(
                           '24/7 Verified Crisis & Emotional Support Helplines',
-                          style: TextStyle(color: Palette.text, fontSize: 14.5, fontWeight: FontWeight.w800),
+                          style: TextStyle(
+                              color: Palette.text,
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w800),
                         ),
                         SizedBox(height: 2),
                         Text(
                           'Free, confidential human support across India — tap any number to call.',
-                          style: TextStyle(color: Palette.textDim, fontSize: 12),
+                          style:
+                              TextStyle(color: Palette.textDim, fontSize: 12),
                         ),
                       ],
                     ),
@@ -1530,7 +1741,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       borderRadius: BorderRadius.circular(12),
                       onTap: () => _dialNumber(h.number),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
                           color: h.color.withOpacity(0.14),
                           borderRadius: BorderRadius.circular(12),
@@ -1556,7 +1768,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                                 ),
                                 Text(
                                   h.subtitle,
-                                  style: const TextStyle(color: Palette.textDim, fontSize: 10.5),
+                                  style: const TextStyle(
+                                      color: Palette.textDim, fontSize: 10.5),
                                 ),
                               ],
                             ),
@@ -1577,7 +1790,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             children: [
               const Text(
                 'Share how you are feeling—stress, anxiety, sleep trouble, or caregiver fatigue—for evidence-based CBT grounding and breathing support.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 13.5, height: 1.4),
               ),
               const SizedBox(height: 14),
               TextField(
@@ -1593,7 +1807,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 12),
               const Text(
                 'Quick Prompts',
-                style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1611,15 +1828,20 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: _wellbeingBusy ? null : () => _runWellbeing(),
-                style: FilledButton.styleFrom(backgroundColor: Palette.orange, foregroundColor: Palette.bg),
+                style: FilledButton.styleFrom(
+                    backgroundColor: Palette.orange,
+                    foregroundColor: Palette.bg),
                 icon: _wellbeingBusy
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2.2, color: Palette.bg),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.2, color: Palette.bg),
                       )
                     : const Icon(Icons.self_improvement_rounded),
-                label: Text(_wellbeingBusy ? 'Preparing Support…' : 'Get Wellbeing Guidance'),
+                label: Text(_wellbeingBusy
+                    ? 'Preparing Support…'
+                    : 'Get Wellbeing Guidance'),
               ),
             ],
           ),
@@ -1642,22 +1864,26 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
       (
         modality: 'Chest X-Ray',
         region: 'Thorax / Bilateral Lungs',
-        context: 'Fever, productive cough, and SpO2 93%; evaluate right lower lobe opacity & cardiothoracic ratio.',
+        context:
+            'Fever, productive cough, and SpO2 93%; evaluate right lower lobe opacity & cardiothoracic ratio.',
       ),
       (
         modality: 'Brain CT/MRI',
         region: 'Cranium / Cerebral Hemisphere',
-        context: 'Acute onset right-sided weakness and slurred speech; rule out ischemic infarct or hemorrhage.',
+        context:
+            'Acute onset right-sided weakness and slurred speech; rule out ischemic infarct or hemorrhage.',
       ),
       (
         modality: 'Bone/Joint X-Ray',
         region: 'Knee / Shoulder Joint',
-        context: 'History of fall detected by walking stick; localized tenderness and swelling.',
+        context:
+            'History of fall detected by walking stick; localized tenderness and swelling.',
       ),
       (
         modality: 'Retinal/Skin Scan',
         region: 'Retina / Macula',
-        context: 'Long-standing Type 2 Diabetes; screen for microaneurysms or macular edema.',
+        context:
+            'Long-standing Type 2 Diabetes; screen for microaneurysms or macular edema.',
       ),
     ];
 
@@ -1672,12 +1898,16 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             children: [
               const Text(
                 'Select imaging modality, anatomical region, and clinical context to run structured radiological ROI bounding-box detection, differential diagnosis, and RLHF verification.',
-                style: TextStyle(color: Palette.textDim, fontSize: 13.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 13.5, height: 1.4),
               ),
               const SizedBox(height: 14),
               const Text(
                 '1. Imaging Modality',
-                style: TextStyle(color: Palette.red, fontSize: 12.5, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                    color: Palette.red,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1691,12 +1921,15 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       selectedColor: Palette.red.withOpacity(0.22),
                       backgroundColor: Palette.surfaceHi,
                       labelStyle: TextStyle(
-                        color: _selectedModality == m ? Palette.red : Palette.text,
+                        color:
+                            _selectedModality == m ? Palette.red : Palette.text,
                         fontSize: 12.5,
                         fontWeight: FontWeight.w700,
                       ),
                       side: BorderSide(
-                        color: _selectedModality == m ? Palette.red : Palette.outline,
+                        color: _selectedModality == m
+                            ? Palette.red
+                            : Palette.outline,
                       ),
                       onSelected: (_) => setState(() => _selectedModality = m),
                     ),
@@ -1724,14 +1957,18 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 maxLines: 4,
                 decoration: const InputDecoration(
                   labelText: '3. Clinical Indication / Radiograph Notes',
-                  hintText: 'Enter symptoms, history, or PACS observation…',
+                  hintText:
+                      'Optional: enter the patient’s actual symptoms or notes.',
                   alignLabelWithHint: true,
                 ),
               ),
               const SizedBox(height: 12),
               const Text(
                 'Quick Imaging Presets',
-                style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.textDim,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1740,9 +1977,11 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 children: [
                   for (final p in presets)
                     _SampleChip(
-                      label: '${p.modality} • ${p.region.split('/').first.trim()}',
+                      label:
+                          '${p.modality} • ${p.region.split('/').first.trim()}',
                       accent: Palette.red,
-                      onTap: () => _runDiagnosticImaging(p.modality, p.region, p.context),
+                      onTap: () => _runDiagnosticImaging(
+                          p.modality, p.region, p.context),
                     ),
                 ],
               ),
@@ -1752,15 +1991,19 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   backgroundColor: Palette.red,
                   foregroundColor: Colors.white,
                 ),
-                onPressed: _radiologyBusy ? null : () => _runDiagnosticImaging(),
+                onPressed:
+                    _radiologyBusy ? null : () => _runDiagnosticImaging(),
                 icon: _radiologyBusy
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2.2, color: Colors.white),
                       )
                     : const Icon(Icons.document_scanner_rounded),
-                label: Text(_radiologyBusy ? 'Running AI Radiology Analysis…' : 'Analyze Diagnostic Imaging'),
+                label: Text(_radiologyBusy
+                    ? 'Running AI Radiology Analysis…'
+                    : 'Analyze Diagnostic Imaging'),
               ),
             ],
           ),
@@ -1770,7 +2013,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           _buildRadiologyResultView(_radiologyResult!),
           const SizedBox(height: 12),
           _buildRlhfFeedbackBar(
-            logId: '${_radiologyResult!['logId'] ?? _radiologyResult!['id'] ?? 'radiology_log'}',
+            logId:
+                '${_radiologyResult!['logId'] ?? _radiologyResult!['id'] ?? 'radiology_log'}',
             selectedReward: _radiologyFeedbackReward,
             isRadiology: true,
           ),
@@ -1794,8 +2038,12 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             .map((e) => e.cast<String, dynamic>())
             .toList() ??
         const [];
-    final diffDx = ((res['differentialDiagnosis']) as List?)?.map((e) => '$e').toList() ?? const [];
-    final impression = '${res['impression'] ?? res['summary'] ?? res['response'] ?? ''}'.trim();
+    final diffDx =
+        ((res['differentialDiagnosis']) as List?)?.map((e) => '$e').toList() ??
+            const [];
+    final impression =
+        '${res['impression'] ?? res['summary'] ?? res['response'] ?? ''}'
+            .trim();
 
     return GlassCard(
       borderColor: Palette.red.withOpacity(0.55),
@@ -1810,7 +2058,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   color: Palette.red.withOpacity(0.16),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.collections_bookmark_rounded, color: Palette.red, size: 20),
+                child: const Icon(Icons.collections_bookmark_rounded,
+                    color: Palette.red, size: 20),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -1819,7 +2068,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   children: [
                     Text(
                       '$_selectedModality • $_selectedImagingRegion',
-                      style: const TextStyle(color: Palette.text, fontSize: 15.5, fontWeight: FontWeight.w800),
+                      style: const TextStyle(
+                          color: Palette.text,
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w800),
                     ),
                     const Text(
                       'Structured AI Radiology Report & Bounding-Box Localization',
@@ -1829,7 +2081,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
                   color: Palette.teal.withOpacity(0.16),
                   borderRadius: BorderRadius.circular(999),
@@ -1857,7 +2110,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             const SizedBox(height: 16),
             const Text(
               'Annotated Radiological Findings & ROI Coordinates',
-              style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w800),
+              style: TextStyle(
+                  color: Palette.textDim,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             for (final f in findings)
@@ -1872,7 +2128,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   final bbox = f['boundingBox'] ?? f['box'] ?? f['coordinates'];
                   String bboxText = '';
                   if (bbox is Map) {
-                    bboxText = 'ROI [x:${bbox['x'] ?? 0}, y:${bbox['y'] ?? 0}, w:${bbox['width'] ?? bbox['w'] ?? 0}, h:${bbox['height'] ?? bbox['h'] ?? 0}]';
+                    bboxText =
+                        'ROI [x:${bbox['x'] ?? 0}, y:${bbox['y'] ?? 0}, w:${bbox['width'] ?? bbox['w'] ?? 0}, h:${bbox['height'] ?? bbox['h'] ?? 0}]';
                   } else if (bbox is List) {
                     bboxText = 'ROI [${bbox.join(", ")}]';
                   }
@@ -1890,7 +2147,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                         children: [
                           Row(
                             children: [
-                              Icon(Icons.crop_free_rounded, size: 16, color: sevColor),
+                              Icon(Icons.crop_free_rounded,
+                                  size: 16, color: sevColor),
                               const SizedBox(width: 7),
                               Expanded(
                                 child: Text(
@@ -1903,7 +2161,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                                 ),
                               ),
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
                                 decoration: BoxDecoration(
                                   color: sevColor.withOpacity(0.16),
                                   borderRadius: BorderRadius.circular(999),
@@ -1931,11 +2190,15 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                               ),
                             ),
                           ],
-                          if (f['description'] != null || f['details'] != null) ...[
+                          if (f['description'] != null ||
+                              f['details'] != null) ...[
                             const SizedBox(height: 4),
                             Text(
                               '${f['description'] ?? f['details']}',
-                              style: const TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.35),
+                              style: const TextStyle(
+                                  color: Palette.textDim,
+                                  fontSize: 12.5,
+                                  height: 1.35),
                             ),
                           ],
                         ],
@@ -1951,16 +2214,23 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             const SizedBox(height: 14),
             const Text(
               'Possible Conditions & Likelihood %',
-              style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w800),
+              style: TextStyle(
+                  color: Palette.textDim,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             for (final c in possibleConditions)
               Builder(
                 builder: (context) {
-                  final rawLikelihood = c['likelihood'] ?? c['probability'] ?? 70;
+                  final rawLikelihood =
+                      c['likelihood'] ?? c['probability'] ?? 70;
                   final pct = rawLikelihood is num
-                      ? (rawLikelihood <= 1.0 ? (rawLikelihood * 100).round() : rawLikelihood.round())
-                      : int.tryParse('$rawLikelihood'.replaceAll('%', '')) ?? 70;
+                      ? (rawLikelihood <= 1.0
+                          ? (rawLikelihood * 100).round()
+                          : rawLikelihood.round())
+                      : int.tryParse('$rawLikelihood'.replaceAll('%', '')) ??
+                          70;
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Column(
@@ -1971,7 +2241,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                           children: [
                             Text(
                               '${c['condition'] ?? c['name'] ?? 'Condition'}',
-                              style: const TextStyle(color: Palette.text, fontSize: 13, fontWeight: FontWeight.w700),
+                              style: const TextStyle(
+                                  color: Palette.text,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700),
                             ),
                             Text(
                               '$pct%',
@@ -1991,7 +2264,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                             value: (pct / 100.0).clamp(0.0, 1.0),
                             minHeight: 6,
                             backgroundColor: Palette.surfaceHi,
-                            valueColor: const AlwaysStoppedAnimation<Color>(Palette.teal),
+                            valueColor: const AlwaysStoppedAnimation<Color>(
+                                Palette.teal),
                           ),
                         ),
                       ],
@@ -2006,7 +2280,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             const SizedBox(height: 14),
             const Text(
               'Differential Diagnosis',
-              style: TextStyle(color: Palette.textDim, fontSize: 12, fontWeight: FontWeight.w800),
+              style: TextStyle(
+                  color: Palette.textDim,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -2015,7 +2292,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
               children: [
                 for (final dx in diffDx)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
                       color: Palette.surfaceHi,
                       borderRadius: BorderRadius.circular(999),
@@ -2023,7 +2301,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                     ),
                     child: Text(
                       dx,
-                      style: const TextStyle(color: Palette.text, fontSize: 12, fontWeight: FontWeight.w700),
+                      style: const TextStyle(
+                          color: Palette.text,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700),
                     ),
                   ),
               ],
@@ -2049,17 +2330,23 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           const Expanded(
             child: Text(
               'RLHF Clinical Calibration: Was this AI interpretation accurate?',
-              style: TextStyle(color: Palette.textDim, fontSize: 12.5, fontWeight: FontWeight.w600),
+              style: TextStyle(
+                  color: Palette.textDim,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600),
             ),
           ),
           IconButton.filledTonal(
             tooltip: 'Accurate (+1 RLHF)',
             style: IconButton.styleFrom(
-              backgroundColor: selectedReward == 1 ? Palette.green.withOpacity(0.25) : Palette.surfaceHi,
+              backgroundColor: selectedReward == 1
+                  ? Palette.green.withOpacity(0.25)
+                  : Palette.surfaceHi,
             ),
             onPressed: _sendingFeedback
                 ? null
-                : () => _submitRlhfFeedback(logId: logId, reward: 1, isRadiology: isRadiology),
+                : () => _submitRlhfFeedback(
+                    logId: logId, reward: 1, isRadiology: isRadiology),
             icon: Icon(
               Icons.thumb_up_alt_rounded,
               size: 18,
@@ -2070,11 +2357,14 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           IconButton.filledTonal(
             tooltip: 'Needs Correction (-1 RLHF)',
             style: IconButton.styleFrom(
-              backgroundColor: selectedReward == -1 ? Palette.red.withOpacity(0.25) : Palette.surfaceHi,
+              backgroundColor: selectedReward == -1
+                  ? Palette.red.withOpacity(0.25)
+                  : Palette.surfaceHi,
             ),
             onPressed: _sendingFeedback
                 ? null
-                : () => _submitRlhfFeedback(logId: logId, reward: -1, isRadiology: isRadiology),
+                : () => _submitRlhfFeedback(
+                    logId: logId, reward: -1, isRadiology: isRadiology),
             icon: Icon(
               Icons.thumb_down_alt_rounded,
               size: 18,
@@ -2093,10 +2383,15 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
     required Color accent,
   }) {
     final emergency = result['emergency'] == true;
-    final responseText = '${result['response'] ?? result['summary'] ?? result['assessmentSummary'] ?? ''}'.trim();
+    final responseText =
+        '${result['response'] ?? result['summary'] ?? result['assessmentSummary'] ?? ''}'
+            .trim();
     final provider = '${result['provider'] ?? 'Jeevan Clinical AI'}';
     final rawSources = (result['sources'] as List?) ?? const [];
-    final sources = rawSources.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+    final sources = rawSources
+        .whereType<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2109,7 +2404,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.emergency_rounded, color: Palette.red, size: 26),
+                const Icon(Icons.emergency_rounded,
+                    color: Palette.red, size: 26),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -2127,7 +2423,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                       const SizedBox(height: 4),
                       const Text(
                         'Red-flag symptoms require immediate medical attention. Do not wait—call Emergency 112 or trigger Jeevan SOS immediately.',
-                        style: TextStyle(color: Palette.text, fontSize: 13, height: 1.35),
+                        style: TextStyle(
+                            color: Palette.text, fontSize: 13, height: 1.35),
                       ),
                       const SizedBox(height: 10),
                       Wrap(
@@ -2140,10 +2437,12 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                               backgroundColor: Palette.red,
                               foregroundColor: Colors.white,
                               minimumSize: const Size(0, 38),
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 8),
                             ),
                             icon: const Icon(Icons.call_rounded, size: 16),
-                            label: const Text('Call 112 Now', style: TextStyle(fontSize: 13)),
+                            label: const Text('Call 112 Now',
+                                style: TextStyle(fontSize: 13)),
                           ),
                         ],
                       ),
@@ -2156,7 +2455,9 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
           const SizedBox(height: 12),
         ],
         GlassCard(
-          borderColor: emergency ? Palette.red.withOpacity(0.45) : accent.withOpacity(0.4),
+          borderColor: emergency
+              ? Palette.red.withOpacity(0.45)
+              : accent.withOpacity(0.4),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -2165,17 +2466,22 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   Container(
                     width: 8,
                     height: 8,
-                    decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+                    decoration:
+                        BoxDecoration(color: accent, shape: BoxShape.circle),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       title,
-                      style: const TextStyle(color: Palette.text, fontSize: 15.5, fontWeight: FontWeight.w800),
+                      style: const TextStyle(
+                          color: Palette.text,
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w800),
                     ),
                   ),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 9, vertical: 3.5),
                     decoration: BoxDecoration(
                       color: accent.withOpacity(0.14),
                       borderRadius: BorderRadius.circular(999),
@@ -2207,7 +2513,10 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                 const SizedBox(height: 12),
                 const Text(
                   'Clinical Knowledge Base Citations',
-                  style: TextStyle(color: Palette.textDim, fontSize: 11.5, fontWeight: FontWeight.w700),
+                  style: TextStyle(
+                      color: Palette.textDim,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 8),
                 Wrap(
@@ -2216,7 +2525,8 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                   children: [
                     for (final s in sources)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
                         decoration: BoxDecoration(
                           color: Palette.surfaceHi,
                           borderRadius: BorderRadius.circular(10),
@@ -2238,10 +2548,15 @@ class _ClinicalToolsScreenState extends ConsumerState<ClinicalToolsScreen> {
                             Flexible(
                               child: Text(
                                 [
-                                  if (s['title'] != null && '${s['title']}'.isNotEmpty) '${s['title']}',
-                                  if (s['heading'] != null && '${s['heading']}'.isNotEmpty) '${s['heading']}',
+                                  if (s['title'] != null &&
+                                      '${s['title']}'.isNotEmpty)
+                                    '${s['title']}',
+                                  if (s['heading'] != null &&
+                                      '${s['heading']}'.isNotEmpty)
+                                    '${s['heading']}',
                                 ].join(' • '),
-                                style: const TextStyle(color: Palette.text, fontSize: 12),
+                                style: const TextStyle(
+                                    color: Palette.text, fontSize: 12),
                               ),
                             ),
                           ],
@@ -2290,7 +2605,8 @@ class _BulletSectionCard extends StatelessWidget {
               const SizedBox(width: 6),
               Text(
                 title,
-                style: TextStyle(color: color, fontSize: 12.5, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                    color: color, fontSize: 12.5, fontWeight: FontWeight.w800),
               ),
             ],
           ),
@@ -2300,7 +2616,8 @@ class _BulletSectionCard extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 3),
               child: Text(
                 '• $item',
-                style: const TextStyle(color: Palette.text, fontSize: 12.5, height: 1.35),
+                style: const TextStyle(
+                    color: Palette.text, fontSize: 12.5, height: 1.35),
               ),
             ),
         ],

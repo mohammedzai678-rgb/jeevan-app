@@ -13,7 +13,14 @@ class Vitals {
   final bool? leadOff;
   final bool? fingerDetected;
 
-  const Vitals({this.heartRate, this.spo2, this.temperature, this.ecgBpm, this.ecgValue, this.leadOff, this.fingerDetected});
+  const Vitals(
+      {this.heartRate,
+      this.spo2,
+      this.temperature,
+      this.ecgBpm,
+      this.ecgValue,
+      this.leadOff,
+      this.fingerDetected});
 
   factory Vitals.fromJson(Map<String, dynamic> j) => Vitals(
         heartRate: _int(j['heart_rate']),
@@ -25,7 +32,9 @@ class Vitals {
         fingerDetected: j['finger_detected'] as bool?,
       );
 
-  Vitals copyWith({int? heartRate, int? spo2, double? temperature, int? ecgBpm}) => Vitals(
+  Vitals copyWith(
+          {int? heartRate, int? spo2, double? temperature, int? ecgBpm}) =>
+      Vitals(
         heartRate: heartRate ?? this.heartRate,
         spo2: spo2 ?? this.spo2,
         temperature: temperature ?? this.temperature,
@@ -35,12 +44,17 @@ class Vitals {
         fingerDetected: fingerDetected,
       );
 
-  bool get isEmpty => heartRate == null && spo2 == null && temperature == null && ecgBpm == null;
+  bool get isEmpty =>
+      heartRate == null &&
+      spo2 == null &&
+      temperature == null &&
+      ecgBpm == null;
 }
 
 class Finding {
   final String metric, value, status, normalRange, explanation, recommendation;
-  const Finding(this.metric, this.value, this.status, this.normalRange, this.explanation, this.recommendation);
+  const Finding(this.metric, this.value, this.status, this.normalRange,
+      this.explanation, this.recommendation);
   factory Finding.fromJson(Map<String, dynamic> j) => Finding(
         '${j['metric']}',
         '${j['value']}',
@@ -57,14 +71,22 @@ class Analysis {
   final String summary;
   final List<Finding> findings;
   final List<String> redFlags;
-  const Analysis({this.overallStatus = 'normal', this.riskScore = 0, this.summary = '', this.findings = const [], this.redFlags = const []});
+  const Analysis(
+      {this.overallStatus = 'normal',
+      this.riskScore = 0,
+      this.summary = '',
+      this.findings = const [],
+      this.redFlags = const []});
 
   factory Analysis.fromJson(Map<String, dynamic> j) => Analysis(
         overallStatus: (j['overall_status'] as String?) ?? 'normal',
         riskScore: _int(j['risk_score']) ?? 0,
         summary: (j['summary'] as String?) ?? '',
-        findings: ((j['findings'] as List?) ?? const []).map((e) => Finding.fromJson(e as Map<String, dynamic>)).toList(),
-        redFlags: ((j['red_flags'] as List?) ?? const []).map((e) => '$e').toList(),
+        findings: ((j['findings'] as List?) ?? const [])
+            .map((e) => Finding.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        redFlags:
+            ((j['red_flags'] as List?) ?? const []).map((e) => '$e').toList(),
       );
 }
 
@@ -72,8 +94,10 @@ class Reminder {
   final bool active;
   final String slot, medication;
   const Reminder({this.active = false, this.slot = '', this.medication = ''});
-  factory Reminder.fromJson(Map<String, dynamic> j) =>
-      Reminder(active: j['active'] == true, slot: '${j['slot'] ?? ''}', medication: '${j['medication'] ?? ''}');
+  factory Reminder.fromJson(Map<String, dynamic> j) => Reminder(
+      active: j['active'] == true,
+      slot: '${j['slot'] ?? ''}',
+      medication: '${j['medication'] ?? ''}');
 }
 
 /// Where the displayed numbers came from; drives the latency badge.
@@ -114,12 +138,21 @@ class DeviceSnapshot {
         signalQuality: '${j['signal_quality'] ?? 'UNKNOWN'}',
         rssi: _int(j['rssi']),
         seq: _int(j['seq']) ?? 0,
-        vitals: Vitals.fromJson((j['vitals'] as Map?)?.cast<String, dynamic>() ?? {}),
-        analysis: Analysis.fromJson((j['analysis'] as Map?)?.cast<String, dynamic>() ?? {}),
-        reminder: Reminder.fromJson((j['reminder'] as Map?)?.cast<String, dynamic>() ?? {}),
+        vitals: Vitals.fromJson(
+            (j['vitals'] as Map?)?.cast<String, dynamic>() ?? {}),
+        analysis: Analysis.fromJson(
+            (j['analysis'] as Map?)?.cast<String, dynamic>() ?? {}),
+        reminder: Reminder.fromJson(
+            (j['reminder'] as Map?)?.cast<String, dynamic>() ?? {}),
       );
 
-  DeviceSnapshot copyWith({bool? online, Vitals? vitals, Analysis? analysis, Reminder? reminder, VitalsSource? source}) => DeviceSnapshot(
+  DeviceSnapshot copyWith(
+          {bool? online,
+          Vitals? vitals,
+          Analysis? analysis,
+          Reminder? reminder,
+          VitalsSource? source}) =>
+      DeviceSnapshot(
         deviceId: deviceId,
         online: online ?? this.online,
         sensor: sensor,
@@ -153,6 +186,7 @@ class SosEvent {
   });
 
   bool get active => status == 'active';
+  bool get hasLocation => mapsUrl.isNotEmpty || lat != 0 || lng != 0;
 
   factory SosEvent.fromJson(Map<String, dynamic> j) {
     final loc = (j['location'] as Map?)?.cast<String, dynamic>() ?? {};
@@ -168,12 +202,22 @@ class SosEvent {
     );
   }
 
-  SosEvent copyWith({String? status, double? lat, double? lng, Map<String, dynamic>? deliveryResults}) => SosEvent(
+  SosEvent copyWith(
+          {String? status,
+          double? lat,
+          double? lng,
+          String? mapsUrl,
+          Map<String, dynamic>? deliveryResults}) =>
+      SosEvent(
         eventId: eventId,
         roomId: roomId,
         source: source,
         status: status ?? this.status,
-        mapsUrl: mapsUrl,
+        mapsUrl: mapsUrl ??
+            ((lat != null || lng != null) &&
+                    ((lat ?? this.lat) != 0 || (lng ?? this.lng) != 0)
+                ? 'https://maps.google.com/?q=${lat ?? this.lat},${lng ?? this.lng}'
+                : this.mapsUrl),
         lat: lat ?? this.lat,
         lng: lng ?? this.lng,
         time: time,
@@ -187,7 +231,9 @@ class Reading {
   final int heartRate, spo2;
   final double temperature;
   final String status;
-  const Reading(this.at, this.heartRate, this.spo2, this.temperature, this.status, {this.id = ''});
+  const Reading(
+      this.at, this.heartRate, this.spo2, this.temperature, this.status,
+      {this.id = ''});
   factory Reading.fromJson(Map<String, dynamic> j) => Reading(
         DateTime.tryParse('${j['recorded_at']}')?.toLocal() ?? DateTime.now(),
         _int(j['heart_rate']) ?? 0,
@@ -202,9 +248,11 @@ class Session {
   final String accessToken, refreshToken, userId;
   final String? email;
   final DateTime expiresAt;
-  const Session(this.accessToken, this.refreshToken, this.userId, this.email, this.expiresAt);
+  const Session(this.accessToken, this.refreshToken, this.userId, this.email,
+      this.expiresAt);
 
-  bool get expiringSoon => DateTime.now().isAfter(expiresAt.subtract(const Duration(seconds: 60)));
+  bool get expiringSoon =>
+      DateTime.now().isAfter(expiresAt.subtract(const Duration(seconds: 60)));
 
   Map<String, dynamic> toJson() => {
         'a': accessToken,
@@ -228,8 +276,12 @@ class Source {
   final String title, heading, snippet;
   final bool private;
   const Source(this.n, this.title, this.heading, this.snippet, this.private);
-  factory Source.fromJson(Map<String, dynamic> j) =>
-      Source(_int(j['n']) ?? 0, '${j['title']}', '${j['heading']}', '${j['snippet']}', j['private'] == true);
+  factory Source.fromJson(Map<String, dynamic> j) => Source(
+      _int(j['n']) ?? 0,
+      '${j['title']}',
+      '${j['heading']}',
+      '${j['snippet']}',
+      j['private'] == true);
 }
 
 class ChatMessage {
@@ -248,7 +300,13 @@ class ChatMessage {
     this.firstTokenMs,
   });
 
-  ChatMessage copyWith({String? text, List<Source>? sources, bool? emergency, bool? fallback, bool? streaming, int? firstTokenMs}) =>
+  ChatMessage copyWith(
+          {String? text,
+          List<Source>? sources,
+          bool? emergency,
+          bool? fallback,
+          bool? streaming,
+          int? firstTokenMs}) =>
       ChatMessage(
         fromUser: fromUser,
         text: text ?? this.text,
@@ -310,14 +368,18 @@ class EmergencyRouteInfo {
     this.points = const [],
   });
 
-  factory EmergencyRouteInfo.fromJson(Map<String, dynamic> j) => EmergencyRouteInfo(
+  factory EmergencyRouteInfo.fromJson(Map<String, dynamic> j) =>
+      EmergencyRouteInfo(
         source: '${j['source'] ?? 'tomtom'}',
         distanceMeters: _int(j['distanceMeters'] ?? j['distance_meters']) ?? 0,
-        travelTimeSeconds: _int(j['travelTimeSeconds'] ?? j['travel_time_seconds']) ?? 0,
-        trafficDelaySeconds: _int(j['trafficDelaySeconds'] ?? j['traffic_delay_seconds']) ?? 0,
+        travelTimeSeconds:
+            _int(j['travelTimeSeconds'] ?? j['travel_time_seconds']) ?? 0,
+        trafficDelaySeconds:
+            _int(j['trafficDelaySeconds'] ?? j['traffic_delay_seconds']) ?? 0,
         points: ((j['points'] as List?) ?? const [])
             .whereType<Map>()
-            .map((p) => (lat: _dbl(p['lat']) ?? 0.0, lon: _dbl(p['lon']) ?? 0.0))
+            .map(
+                (p) => (lat: _dbl(p['lat']) ?? 0.0, lon: _dbl(p['lon']) ?? 0.0))
             .toList(),
       );
 }
@@ -344,4 +406,3 @@ class RtcSession {
         expiresAt: _int(j['expiresAt']) ?? 0,
       );
 }
-

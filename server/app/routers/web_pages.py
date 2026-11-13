@@ -180,7 +180,7 @@ async def agora_video_call_page(
 @router.get("/emergency/{user_id}", response_class=HTMLResponse)
 async def emergency_medical_id_page(user_id: str, request: Request) -> HTMLResponse:
     ctx = get_ctx(request)
-    uid = html.escape(user_id.strip() or "zaid-001")
+    uid = html.escape(user_id.strip())
     summary: dict[str, Any] = {}
     if ctx.persist.enabled:
         rows = await ctx.persist.select(
@@ -190,27 +190,45 @@ async def emergency_medical_id_page(user_id: str, request: Request) -> HTMLRespo
         if rows:
             summary = rows[0]
 
-    name = html.escape(str(summary.get("name") or "zaid"))
-    blood = html.escape(str(summary.get("bloodType") or "A+"))
-    allergies = summary.get("allergies") or ["Penicillin", "Sulfa Drugs"]
-    conditions = summary.get("conditions") or ["Mild Asthma"]
-    meds = summary.get("currentMedications") or ["Salbutamol Inhaler PRN"]
-    contacts = summary.get("emergencyContacts") or [
-        {"name": "Family Emergency Contact", "relationship": "Parent / Guardian", "phone": "+91 98765 43210"}
-    ]
+    name = html.escape(str(summary.get("name") or "Jeevan User"))
+    blood = html.escape(str(summary.get("bloodType") or "Not specified"))
+    dob = html.escape(str(summary.get("dob") or "Not provided"))
+    allergies = summary.get("allergies") or []
+    conditions = summary.get("conditions") or []
+    meds = summary.get("currentMedications") or []
+    contacts = summary.get("emergencyContacts") or []
+    if summary.get("showEmergencyContacts") is False:
+        contacts = []
 
     def _chips(items: Any) -> str:
         if isinstance(items, str):
             items = [x.strip() for x in items.split(",") if x.strip()]
-        return "".join(f"<span class='chip'>{html.escape(str(x))}</span>" for x in (items or ["None"]))
+        values = [
+            str(item).strip()
+            for item in (items or [])
+            if str(item).strip()
+            and str(item).strip().lower() not in {"none", "none reported", "not provided", "not specified", "unknown"}
+        ]
+        return "".join(f"<span class='chip'>{html.escape(value)}</span>" for value in values) or "<span class='muted'>Not provided</span>"
+
+    def _contact_row(contact: dict[str, Any]) -> str:
+        phone = str(contact.get("phone") or "").strip()
+        call_link = (
+            f"<a class='call' href='tel:{html.escape(phone.replace(' ', ''))}'>"
+            f"Call {html.escape(phone)}</a>"
+            if phone
+            else ""
+        )
+        return (
+            f"<div class='row'><div><strong>{html.escape(str(contact.get('name') or 'Emergency contact'))}</strong>"
+            f"<div class='muted'>{html.escape(str(contact.get('relationship') or ''))}</div>"
+            f"<div class='muted'>{html.escape(str(contact.get('email') or ''))}</div></div>"
+            f"{call_link}</div>"
+        )
 
     contact_rows = "".join(
-        f"<div class='row'><div><strong>{html.escape(str(c.get('name', 'Contact')))}</strong>"
-        f"<div class='muted'>{html.escape(str(c.get('relationship', 'Emergency Contact')))}</div></div>"
-        f"<a class='call' href='tel:{html.escape(str(c.get('phone', '112')).replace(' ', ''))}'>Call {html.escape(str(c.get('phone', '112')))}</a></div>"
-        for c in contacts
-        if isinstance(c, dict)
-    )
+        _contact_row(contact) for contact in contacts if isinstance(contact, dict)
+    ) or "<div class='muted'>No emergency contacts have been added.</div>"
 
     return HTMLResponse(
         f"""<!doctype html>
@@ -237,6 +255,7 @@ async def emergency_medical_id_page(user_id: str, request: Request) -> HTMLRespo
       <div style="font-size:11px;font-weight:800;letter-spacing:1px;">JEEVANCARE EMERGENCY MEDICAL ID</div>
       <h1 style="margin:6px 0 2px;font-size:26px;">{name}</h1>
       <div style="font-size:12px;opacity:.85;">Patient ID: {uid}</div>
+      <div style="font-size:12px;opacity:.85;">Date of birth: {dob}</div>
       <div class="blood">🩸 Blood Group: {blood}</div>
     </div>
     <div class="card"><strong>⚠️ Allergies</strong><div>{_chips(allergies)}</div></div>

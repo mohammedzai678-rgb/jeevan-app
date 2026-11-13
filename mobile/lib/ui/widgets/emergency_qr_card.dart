@@ -20,15 +20,17 @@ import 'common.dart';
 class EmergencyQrCard extends ConsumerWidget {
   const EmergencyQrCard({
     super.key,
-    this.patientName = 'zaid',
-    this.bloodGroup = 'A+',
-    this.dob = '14 May 1999',
-    this.allergies = const ['Penicillin', 'Sulfa drugs'],
-    this.conditions = const ['Mild asthma'],
-    this.medications = const ['Salbutamol inhaler (PRN)', 'Cetirizine 10 mg'],
-    this.emergencyContactName = 'Family contact',
-    this.emergencyContactRelation = 'Parent / Guardian',
-    this.emergencyContactPhone = '+91 98765 43210',
+    this.patientName = '',
+    this.bloodGroup = '',
+    this.dob = '',
+    this.allergies = const [],
+    this.conditions = const [],
+    this.medications = const [],
+    this.emergencyContactName = '',
+    this.emergencyContactRelation = '',
+    this.emergencyContactPhone = '',
+    this.emergencyContacts,
+    this.showEmergencyContacts,
     this.compact = false,
     this.hero = false,
   });
@@ -42,23 +44,33 @@ class EmergencyQrCard extends ConsumerWidget {
   final String emergencyContactName;
   final String emergencyContactRelation;
   final String emergencyContactPhone;
+  final List<Map<String, String>>? emergencyContacts;
+  final bool? showEmergencyContacts;
   final bool compact;
   final bool hero;
 
-  void _open(BuildContext context, String url) {
+  void _open(
+    BuildContext context,
+    String url, {
+    required String name,
+    required String blood,
+    required String birthDate,
+    required List<String> allergies,
+    required List<String> conditions,
+    required List<String> medications,
+    required List<Map<String, String>> contacts,
+  }) {
     HapticFeedback.lightImpact();
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => EmergencySummaryScreen(
-          patientName: patientName,
-          bloodGroup: bloodGroup,
-          dob: dob,
+          patientName: name,
+          bloodGroup: blood,
+          dob: birthDate,
           allergies: allergies,
           conditions: conditions,
           medications: medications,
-          emergencyContactName: emergencyContactName,
-          emergencyContactRelation: emergencyContactRelation,
-          emergencyContactPhone: emergencyContactPhone,
+          emergencyContacts: contacts,
           summaryUrl: url,
         ),
       ),
@@ -67,15 +79,92 @@ class EmergencyQrCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final uid = ref.watch(sessionProvider).valueOrNull?.userId ?? 'zaid-001';
+    final uid = ref.watch(sessionProvider).valueOrNull?.userId ??
+        ref.read(authProvider).session?.userId;
+    if (uid == null || uid.isEmpty) {
+      return GlassCard(
+        padding: const EdgeInsets.all(16),
+        child: const Row(
+          children: [
+            Icon(Icons.qr_code_2_rounded, color: Palette.red),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Sign in to create your emergency QR summary.',
+                style: TextStyle(color: Palette.textDim, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     final url = '${Config.webBaseUrl}/emergency/$uid';
-    return hero ? _hero(context, url) : _light(context, url);
+    final store = ref.read(storeProvider);
+    List<String> savedList(String value) => value
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty && !item.startsWith('None'))
+        .toList();
+    List<String> resolveList(List<String> supplied, String saved) =>
+        (supplied.isNotEmpty ? supplied : savedList(saved))
+            .map((item) => item.trim())
+            .where((item) => item.isNotEmpty && !item.startsWith('None'))
+            .toList();
+    final name =
+        patientName.trim().isNotEmpty ? patientName.trim() : store.patientName;
+    final blood =
+        bloodGroup.trim().isNotEmpty ? bloodGroup.trim() : store.bloodGroup;
+    final birthDate = dob.trim().isNotEmpty
+        ? dob.trim()
+        : (store.dateOfBirth.trim().isNotEmpty
+            ? store.dateOfBirth.trim()
+            : 'Not provided');
+    final resolvedAllergies = resolveList(allergies, store.allergies);
+    final resolvedConditions = resolveList(conditions, store.conditions);
+    final resolvedMedications = resolveList(medications, store.medications);
+    final showContacts =
+        showEmergencyContacts ?? store.showEmergencyContactsOnQr;
+    final contacts = showContacts
+        ? (emergencyContacts ??
+            (emergencyContactPhone.trim().isNotEmpty ||
+                    emergencyContactName.trim().isNotEmpty
+                ? [
+                    {
+                      'name': emergencyContactName.trim().isNotEmpty
+                          ? emergencyContactName.trim()
+                          : store.contactName,
+                      'relationship': emergencyContactRelation.trim().isNotEmpty
+                          ? emergencyContactRelation.trim()
+                          : store.contactRelation,
+                      'phone': emergencyContactPhone.trim().isNotEmpty
+                          ? emergencyContactPhone.trim()
+                          : store.contactPhone,
+                      'email': store.contactEmail,
+                    }
+                  ]
+                : store.emergencyContacts))
+        : const <Map<String, String>>[];
+    final openSummary = () => _open(
+          context,
+          url,
+          name: name,
+          blood: blood,
+          birthDate: birthDate,
+          allergies: resolvedAllergies,
+          conditions: resolvedConditions,
+          medications: resolvedMedications,
+          contacts: contacts,
+        );
+    return hero
+        ? _hero(context, url, name, blood, openSummary)
+        : _light(context, url, name, blood, openSummary);
   }
 
   // ── Dashboard showpiece ──────────────────────────────────────────────────
-  Widget _hero(BuildContext context, String url) {
+  Widget _hero(BuildContext context, String url, String name, String blood,
+      VoidCallback openSummary) {
     return GestureDetector(
-      onTap: () => _open(context, url),
+      onTap: openSummary,
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(28),
@@ -117,7 +206,8 @@ class EmergencyQrCard extends ConsumerWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 5),
                             decoration: BoxDecoration(
                               color: Colors.white.withValues(alpha: 0.18),
                               borderRadius: BorderRadius.circular(999),
@@ -125,7 +215,8 @@ class EmergencyQrCard extends ConsumerWidget {
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.qr_code_2_rounded, size: 14, color: Colors.white),
+                                Icon(Icons.qr_code_2_rounded,
+                                    size: 14, color: Colors.white),
                                 SizedBox(width: 6),
                                 Text(
                                   'EMERGENCY QR',
@@ -141,7 +232,7 @@ class EmergencyQrCard extends ConsumerWidget {
                           ),
                           const SizedBox(height: 14),
                           Text(
-                            patientName,
+                            name,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -155,32 +246,41 @@ class EmergencyQrCard extends ConsumerWidget {
                           const SizedBox(height: 6),
                           Row(
                             children: [
-                              const Icon(Icons.water_drop_rounded, size: 15, color: Color(0xFFFFD5D9)),
+                              const Icon(Icons.water_drop_rounded,
+                                  size: 15, color: Color(0xFFFFD5D9)),
                               const SizedBox(width: 4),
-                              Text(
-                                'Blood type $bloodGroup',
-                                style: const TextStyle(
-                                  color: Color(0xFFFFE3E5),
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
+                              Expanded(
+                                child: Text(
+                                  'Blood type $blood',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Color(0xFFFFE3E5),
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ),
                             ],
                           ),
                           const SizedBox(height: 16),
                           Row(
-                            mainAxisSize: MainAxisSize.min,
                             children: const [
-                              Text(
-                                'View medical summary',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
+                              Flexible(
+                                child: Text(
+                                  'View medical summary',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
                               ),
                               SizedBox(width: 4),
-                              Icon(Icons.arrow_forward_rounded, size: 16, color: Colors.white),
+                              Icon(Icons.arrow_forward_rounded,
+                                  size: 16, color: Colors.white),
                             ],
                           ),
                         ],
@@ -227,10 +327,11 @@ class EmergencyQrCard extends ConsumerWidget {
   }
 
   // ── Quiet card for other pages ───────────────────────────────────────────
-  Widget _light(BuildContext context, String url) {
+  Widget _light(BuildContext context, String url, String name, String blood,
+      VoidCallback openSummary) {
     return GlassCard(
       padding: const EdgeInsets.all(14),
-      onTap: () => _open(context, url),
+      onTap: openSummary,
       child: Row(
         children: [
           Container(
@@ -245,7 +346,8 @@ class EmergencyQrCard extends ConsumerWidget {
               size: compact ? 76 : 92,
               padding: EdgeInsets.zero,
               backgroundColor: Colors.white,
-              eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: Color(0xFF111827)),
+              eyeStyle: const QrEyeStyle(
+                  eyeShape: QrEyeShape.square, color: Color(0xFF111827)),
               dataModuleStyle: const QrDataModuleStyle(
                 dataModuleShape: QrDataModuleShape.square,
                 color: Color(0xFF111827),
@@ -268,7 +370,7 @@ class EmergencyQrCard extends ConsumerWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '$patientName · $bloodGroup',
+                  '$name · $blood',
                   style: const TextStyle(
                     color: Palette.text,
                     fontSize: 16,
@@ -279,7 +381,8 @@ class EmergencyQrCard extends ConsumerWidget {
                 const SizedBox(height: 2),
                 const Text(
                   'Scan or tap to open your medical summary',
-                  style: TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.35),
+                  style: TextStyle(
+                      color: Palette.textDim, fontSize: 12.5, height: 1.35),
                 ),
               ],
             ),
@@ -303,7 +406,8 @@ class _Ring extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.white.withValues(alpha: alpha), width: 26),
+        border:
+            Border.all(color: Colors.white.withValues(alpha: alpha), width: 26),
       ),
     );
   }
@@ -319,9 +423,7 @@ class EmergencySummaryScreen extends StatelessWidget {
     required this.allergies,
     required this.conditions,
     required this.medications,
-    required this.emergencyContactName,
-    required this.emergencyContactRelation,
-    required this.emergencyContactPhone,
+    required this.emergencyContacts,
     required this.summaryUrl,
   });
 
@@ -331,9 +433,7 @@ class EmergencySummaryScreen extends StatelessWidget {
   final List<String> allergies;
   final List<String> conditions;
   final List<String> medications;
-  final String emergencyContactName;
-  final String emergencyContactRelation;
-  final String emergencyContactPhone;
+  final List<Map<String, String>> emergencyContacts;
   final String summaryUrl;
 
   @override
@@ -395,7 +495,9 @@ class EmergencySummaryScreen extends StatelessWidget {
                       ),
                       alignment: Alignment.center,
                       child: Text(
-                        patientName.isNotEmpty ? patientName[0].toUpperCase() : 'Z',
+                        patientName.isNotEmpty
+                            ? patientName[0].toUpperCase()
+                            : 'Z',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 22,
@@ -419,13 +521,15 @@ class EmergencySummaryScreen extends StatelessWidget {
                           ),
                           Text(
                             'Born $dob',
-                            style: const TextStyle(color: Palette.textDim, fontSize: 13),
+                            style: const TextStyle(
+                                color: Palette.textDim, fontSize: 13),
                           ),
                         ],
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
                       decoration: BoxDecoration(
                         color: Palette.red,
                         borderRadius: BorderRadius.circular(14),
@@ -491,44 +595,102 @@ class EmergencySummaryScreen extends StatelessWidget {
           const SizedBox(height: 12),
           GlassCard(
             padding: const EdgeInsets.all(16),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const IconChip(Icons.contacts_rounded, color: Palette.purple),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        emergencyContactName,
-                        style: const TextStyle(
+                Row(
+                  children: [
+                    const IconChip(Icons.contacts_rounded,
+                        color: Palette.purple),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Emergency contacts',
+                        style: TextStyle(
                           color: Palette.text,
                           fontSize: 15,
                           fontWeight: FontWeight.w800,
                         ),
                       ),
-                      Text(
-                        '$emergencyContactRelation · $emergencyContactPhone',
-                        style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
-                      ),
-                    ],
-                  ),
+                    ),
+                    Text('${emergencyContacts.length}',
+                        style: const TextStyle(
+                            color: Palette.textDim, fontSize: 12)),
+                  ],
                 ),
-                IconButton.filled(
-                  style: IconButton.styleFrom(
-                    backgroundColor: Palette.green,
-                    minimumSize: const Size(46, 46),
-                  ),
-                  onPressed: () => launchUrl(
-                    Uri(scheme: 'tel', path: emergencyContactPhone.replaceAll(' ', '')),
-                  ),
-                  icon: const Icon(Icons.call_rounded, color: Colors.white, size: 20),
-                ),
+                const SizedBox(height: 10),
+                if (emergencyContacts.isEmpty)
+                  const Text(
+                    'No emergency contacts saved for the QR.',
+                    style: TextStyle(color: Palette.textDim, fontSize: 12.5),
+                  )
+                else
+                  for (var i = 0; i < emergencyContacts.length; i++) ...[
+                    if (i > 0) const Divider(height: 18),
+                    _EmergencyContactSummaryRow(contact: emergencyContacts[i]),
+                  ],
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _EmergencyContactSummaryRow extends StatelessWidget {
+  const _EmergencyContactSummaryRow({required this.contact});
+
+  final Map<String, String> contact;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = contact['name']?.trim().isNotEmpty == true
+        ? contact['name']!.trim()
+        : 'Emergency contact';
+    final relation = contact['relationship']?.trim() ?? '';
+    final phone = contact['phone']?.trim() ?? '';
+    final email = contact['email']?.trim() ?? '';
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(name,
+                  style: const TextStyle(
+                      color: Palette.text,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800)),
+              if (relation.isNotEmpty || phone.isNotEmpty)
+                Text(
+                  [
+                    if (relation.isNotEmpty) relation,
+                    if (phone.isNotEmpty) phone
+                  ].join(' · '),
+                  style:
+                      const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                ),
+              if (email.isNotEmpty)
+                Text(email,
+                    style: const TextStyle(
+                        color: Palette.textDim, fontSize: 12.5)),
+            ],
+          ),
+        ),
+        if (phone.isNotEmpty)
+          IconButton.filled(
+            tooltip: 'Call $name',
+            style: IconButton.styleFrom(
+              backgroundColor: Palette.green,
+              minimumSize: const Size(46, 46),
+            ),
+            onPressed: () => launchUrl(
+              Uri(scheme: 'tel', path: phone.replaceAll(RegExp(r'\s+'), '')),
+            ),
+            icon: const Icon(Icons.call_rounded, color: Colors.white, size: 20),
+          ),
+      ],
     );
   }
 }
@@ -574,7 +736,8 @@ class _InfoCard extends StatelessWidget {
             children: [
               for (final item in items)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                   decoration: BoxDecoration(
                     color: Palette.tint(color, 0.10),
                     borderRadius: BorderRadius.circular(999),

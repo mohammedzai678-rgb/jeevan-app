@@ -175,16 +175,17 @@ async def hardware_sos(request: Request) -> dict[str, Any]:
     if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)) or (lat == 0 and lng == 0):
         # No usable GPS yet: fall back to the phone's last known position if we have one, else mark as unknown.
         last = ctx.hub.devices[device_id].gps
-        lat, lng, fix = (last["lat"], last["lng"], False) if last else (0.0, 0.0, False)
+        recent_last = bool(last and time.time() - float(last.get("at", 0)) <= 60)
+        lat, lng, fix = (last["lat"], last["lng"], False) if recent_last else (0.0, 0.0, False)
     else:
-        ctx.hub.devices[device_id].gps = {"lat": float(lat), "lng": float(lng)}
+        ctx.hub.devices[device_id].gps = {"lat": float(lat), "lng": float(lng), "at": time.time()}
     v = body.get("vitals") or {}
     event = dispatch_sos(
         ctx,
         user_id=owner,
         source="hardware_button",
-        lat=float(lat),
-        lng=float(lng),
+        lat=float(lat) if (lat or lng) else None,
+        lng=float(lng) if (lat or lng) else None,
         gps_fix=fix,
         device_id=device_id,
         vitals={"heart_rate": v.get("heart_rate"), "spo2": v.get("spo2"), "temperature": v.get("temperature")},
@@ -206,7 +207,7 @@ async def hardware_sos_location(request: Request) -> dict[str, Any]:
     owner = ctx.hub.owner_of(device_id)
     if not owner:
         raise HTTPException(409, "Device is not paired")
-    ctx.hub.devices[device_id].gps = {"lat": float(loc["lat"]), "lng": float(loc["lng"])}
+    ctx.hub.devices[device_id].gps = {"lat": float(loc["lat"]), "lng": float(loc["lng"]), "at": time.time()}
     latest = ctx.hub.latest_sos.get(owner)
     event_id = body.get("event_id") or (latest or {}).get("event_id")
     if event_id:

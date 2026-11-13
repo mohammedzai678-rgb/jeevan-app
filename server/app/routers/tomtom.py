@@ -86,7 +86,7 @@ def _dedupe_facilities(items: list[dict[str, Any]], lat: float, lon: float) -> l
         seen.add(key)
         out.append(item)
     out.sort(key=lambda x: x.get("distanceMeters", 10**9))
-    return out[:20]
+    return out[:10]
 
 
 async def _fetch_tomtom_facilities(client: httpx.AsyncClient, key: str, lat: float, lon: float, radius: int) -> list[dict[str, Any]]:
@@ -102,7 +102,7 @@ async def _fetch_tomtom_facilities(client: httpx.AsyncClient, key: str, lat: flo
                 "lat": str(lat),
                 "lon": str(lon),
                 "radius": str(radius),
-                "limit": "25",
+                "limit": "8",
                 "idxSet": "POI",
                 "language": "en-US",
             },
@@ -147,13 +147,13 @@ async def _fetch_osm_facilities(client: httpx.AsyncClient, lat: float, lon: floa
         f"[out:json][timeout:8];("
         f'node["amenity"~"hospital|clinic"](around:{radius},{lat},{lon});'
         f'way["amenity"~"hospital|clinic"](around:{radius},{lat},{lon});'
-        f");out center tags 35;"
+        f");out center tags 12;"
     )
-    for ep in OVERPASS_ENDPOINTS:
+    async def query_endpoint(endpoint: str) -> list[dict[str, Any]]:
         try:
-            resp = await client.post(ep, data={"data": query}, timeout=6.0)
+            resp = await client.post(endpoint, data={"data": query}, timeout=4.0)
             if resp.status_code >= 400:
-                continue
+                return []
             elements = resp.json().get("elements") or []
             parsed: list[dict[str, Any]] = []
             for el in elements:
@@ -178,12 +178,12 @@ async def _fetch_osm_facilities(client: httpx.AsyncClient, lat: float, lon: floa
                         "distanceMeters": round(haversine_m(lat, lon, float(elat), float(elon))),
                     }
                 )
-            deduped = _dedupe_facilities(parsed, lat, lon)
-            if deduped:
-                return deduped
+            return _dedupe_facilities(parsed, lat, lon)
         except Exception:
-            continue
-    return []
+            return []
+
+    batches = await asyncio.gather(*(query_endpoint(endpoint) for endpoint in OVERPASS_ENDPOINTS))
+    return _dedupe_facilities([facility for batch in batches for facility in batch], lat, lon)
 
 
 class FacilitiesBody(BaseModel):
@@ -217,16 +217,44 @@ async def search_facilities(body: FacilitiesBody, request: Request) -> dict[str,
         return cached
 
     key = ctx.settings.tomtom_api_key
-    tasks = [_fetch_osm_facilities(ctx.http, body.lat, body.lon, body.radius)]
+    tasks = []
     if key:
-        tasks.insert(0, _fetch_tomtom_facilities(ctx.http, key, body.lat, body.lon, body.radius))
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    combined = [item for r in results if isinstance(r, list) for item in r]
-    facilities = _dedupe_facilities(combined, body.lat, body.lon)
+        tasks.append(asyncio.create_task(_fetch_tomtom_facilities(ctx.http, key, body.lat, body.lon, body.radius)))
+    tasks.append(asyncio.create_task(_fetch_osm_facilities(ctx.http, body.lat, body.lon, body.radius)))
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    results = [task.result() for task in done if not task.cancelled() and task.exception() is None]
+    facilities = _dedupe_facilities([item for batch in results for item in batch], body.lat, body.lon)
+
+    if not facilities and pending:
+        later_results = await asyncio.gather(*pending, return_exceptions=True)
+        facilities = _dedupe_facilities(
+            [item for batch in (*results, *later_results) if isinstance(batch, list) for item in batch],
+            body.lat,
+            body.lon,
+        )
+        pending = set()
+
     if not facilities:
         raise HTTPException(503, "No nearby hospitals or clinics found.")
     source = "tomtom" if any(f.get("source") == "tomtom" for f in facilities) else "openstreetmap"
-    return _cache_set(cache_key, {"source": source, "facilities": facilities})
+    payload = {"source": source, "facilities": facilities}
+    _cache_set(cache_key, payload)
+
+    if pending:
+        async def update_cache_with_fallback() -> None:
+            later_results = await asyncio.gather(*pending, return_exceptions=True)
+            combined = _dedupe_facilities(
+                [item for batch in (*results, *later_results) if isinstance(batch, list) for item in batch],
+                body.lat,
+                body.lon,
+            )
+            if combined:
+                combined_source = "tomtom" if any(f.get("source") == "tomtom" for f in combined) else "openstreetmap"
+                _cache_set(cache_key, {"source": combined_source, "facilities": combined})
+
+        asyncio.create_task(update_cache_with_fallback())
+
+    return payload
 
 
 @router.post("/route")

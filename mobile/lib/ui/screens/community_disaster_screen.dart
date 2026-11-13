@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,9 +7,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/config.dart';
 import '../../core/theme.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
+import '../widgets/map_gesture_layer.dart';
+import '../widgets/map_tile_image.dart';
 
 /// Community, Disaster Response, Blood Bank, Verified NGOs, ABDM/ABHA ID & Emergency Medical QR Profile.
 class CommunityDisasterScreen extends ConsumerStatefulWidget {
@@ -17,10 +21,12 @@ class CommunityDisasterScreen extends ConsumerStatefulWidget {
   final int initialTab;
 
   @override
-  ConsumerState<CommunityDisasterScreen> createState() => _CommunityDisasterScreenState();
+  ConsumerState<CommunityDisasterScreen> createState() =>
+      _CommunityDisasterScreenState();
 }
 
-class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScreen> {
+class _CommunityDisasterScreenState
+    extends ConsumerState<CommunityDisasterScreen> {
   late int _section;
 
   static const _sections = <(IconData, String)>[
@@ -34,13 +40,28 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
   // ── 1. Disaster & Weather Radar state ───────────────────────────────────────
   double _lat = 12.9716;
   double _lng = 77.5946;
+  double _mapCenterLat = 12.9716;
+  double _mapCenterLng = 77.5946;
+  bool _mapWasMoved = false;
+  int _mapZoom = 11;
   bool _loadingDisaster = false;
   String? _disasterError;
   Map<String, dynamic>? _riskData;
   Map<String, dynamic>? _radarData;
 
   // ── 2. Blood Bank state ─────────────────────────────────────────────────────
-  static const _bloodGroups = <String>['All', 'O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
+  static const _bloodGroups = <String>[
+    'All',
+    'Not specified',
+    'O+',
+    'O-',
+    'A+',
+    'A-',
+    'B+',
+    'B-',
+    'AB+',
+    'AB-'
+  ];
   String _selectedBloodGroup = 'All';
   final _citySearchCtrl = TextEditingController();
   bool _loadingDonors = false;
@@ -75,7 +96,7 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
   bool _savingSummary = false;
   String _uid = '';
   final _nameCtrl = TextEditingController();
-  String _profileBloodGroup = 'O+';
+  String _profileBloodGroup = 'Not specified';
   final _dobCtrl = TextEditingController();
   final _allergiesCtrl = TextEditingController();
   final _conditionsCtrl = TextEditingController();
@@ -127,7 +148,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
         if (perm == LocationPermission.denied) {
           perm = await Geolocator.requestPermission();
         }
-        if (perm == LocationPermission.always || perm == LocationPermission.whileInUse) {
+        if (perm == LocationPermission.always ||
+            perm == LocationPermission.whileInUse) {
           final last = await Geolocator.getLastKnownPosition();
           if (last != null) {
             _lat = last.latitude;
@@ -145,6 +167,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
       } catch (_) {
         // Keep fallback coordinates
       }
+    }
+    if (!_mapWasMoved) {
+      _mapCenterLat = _lat;
+      _mapCenterLng = _lng;
     }
 
     try {
@@ -180,7 +206,9 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
     try {
       final bt = _selectedBloodGroup == 'All' ? '' : _selectedBloodGroup;
       final city = _citySearchCtrl.text.trim();
-      final list = await ref.read(apiProvider).searchBloodBank(bloodType: bt, city: city);
+      final list = await ref
+          .read(apiProvider)
+          .searchBloodBank(bloodType: bt, city: city);
       if (!mounted) return;
       setState(() {
         _donors = list;
@@ -197,11 +225,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
 
   Future<void> _showRegisterDonorDialog() async {
     final nameCtrl = TextEditingController(text: _nameCtrl.text.trim());
-    final cityCtrl = TextEditingController(
-      text: _citySearchCtrl.text.trim().isNotEmpty ? _citySearchCtrl.text.trim() : 'Bangalore',
-    );
+    final cityCtrl = TextEditingController(text: _citySearchCtrl.text.trim());
     final phoneCtrl = TextEditingController();
-    String bloodGroup = _selectedBloodGroup == 'All' ? _profileBloodGroup : _selectedBloodGroup;
+    String bloodGroup =
+        _selectedBloodGroup == 'All' ? _profileBloodGroup : _selectedBloodGroup;
     bool submitting = false;
 
     await showDialog<void>(
@@ -220,7 +247,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
               Expanded(
                 child: Text(
                   'Become a Blood Donor',
-                  style: TextStyle(color: Palette.text, fontSize: 18, fontWeight: FontWeight.w700),
+                  style: TextStyle(
+                      color: Palette.text,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700),
                 ),
               ),
             ],
@@ -234,17 +264,20 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   style: const TextStyle(color: Palette.text),
                   decoration: const InputDecoration(
                     labelText: 'Full Name *',
-                    prefixIcon: Icon(Icons.person_outline_rounded, color: Palette.teal),
+                    prefixIcon:
+                        Icon(Icons.person_outline_rounded, color: Palette.teal),
                   ),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: bloodGroup,
                   dropdownColor: Palette.surfaceHi,
-                  style: const TextStyle(color: Palette.text, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                      color: Palette.text, fontWeight: FontWeight.w700),
                   decoration: const InputDecoration(
                     labelText: 'Blood Group *',
-                    prefixIcon: Icon(Icons.bloodtype_outlined, color: Palette.red),
+                    prefixIcon:
+                        Icon(Icons.bloodtype_outlined, color: Palette.red),
                   ),
                   items: _bloodGroups
                       .where((g) => g != 'All')
@@ -260,7 +293,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   style: const TextStyle(color: Palette.text),
                   decoration: const InputDecoration(
                     labelText: 'City *',
-                    prefixIcon: Icon(Icons.location_city_rounded, color: Palette.blue),
+                    prefixIcon:
+                        Icon(Icons.location_city_rounded, color: Palette.blue),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -271,7 +305,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   decoration: const InputDecoration(
                     labelText: 'Contact Phone (Optional)',
                     hintText: '+91 9876543210',
-                    prefixIcon: Icon(Icons.phone_outlined, color: Palette.green),
+                    prefixIcon:
+                        Icon(Icons.phone_outlined, color: Palette.green),
                   ),
                 ),
               ],
@@ -280,7 +315,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
           actions: [
             TextButton(
               onPressed: submitting ? null : () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel', style: TextStyle(color: Palette.textDim)),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Palette.textDim)),
             ),
             FilledButton.icon(
               style: FilledButton.styleFrom(
@@ -295,7 +331,14 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       final city = cityCtrl.text.trim();
                       final phone = phoneCtrl.text.trim();
                       if (name.length < 2 || city.length < 2) {
-                        showSnack(context, 'Please enter your name and city.', error: true);
+                        showSnack(context, 'Please enter your name and city.',
+                            error: true);
+                        return;
+                      }
+                      if (bloodGroup == 'Not specified') {
+                        showSnack(context,
+                            'Choose your blood group to register as a donor.',
+                            error: true);
                         return;
                       }
                       setDialogState(() => submitting = true);
@@ -308,20 +351,25 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                             );
                         if (ctx.mounted) Navigator.of(ctx).pop();
                         if (mounted) {
-                          showSnack(context, 'Registered $name ($bloodGroup) in $city Blood Bank!');
+                          showSnack(context,
+                              'Registered $name ($bloodGroup) in $city Blood Bank!');
                           await _loadBloodDonors();
                         }
                       } catch (e) {
-                        if (mounted) showSnack(context, 'Registration failed: $e', error: true);
+                        if (mounted)
+                          showSnack(context, 'Registration failed: $e',
+                              error: true);
                       } finally {
-                        if (ctx.mounted) setDialogState(() => submitting = false);
+                        if (ctx.mounted)
+                          setDialogState(() => submitting = false);
                       }
                     },
               icon: submitting
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
                     )
                   : const Icon(Icons.favorite_rounded, size: 18),
               label: Text(submitting ? 'Saving…' : 'Register'),
@@ -346,7 +394,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
       _ngosError = null;
     });
     try {
-      final list = await ref.read(apiProvider).listNgos(category: _selectedNgoCategory);
+      final list =
+          await ref.read(apiProvider).listNgos(category: _selectedNgoCategory);
       if (!mounted) return;
       setState(() {
         _ngos = list;
@@ -384,7 +433,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
               Expanded(
                 child: Text(
                   'Contact $ngoName',
-                  style: const TextStyle(color: Palette.text, fontSize: 17, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                      color: Palette.text,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700),
                 ),
               ),
             ],
@@ -398,7 +450,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   style: const TextStyle(color: Palette.text),
                   decoration: const InputDecoration(
                     labelText: 'Your Name *',
-                    prefixIcon: Icon(Icons.person_outline_rounded, color: Palette.teal),
+                    prefixIcon:
+                        Icon(Icons.person_outline_rounded, color: Palette.teal),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -408,7 +461,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   style: const TextStyle(color: Palette.text),
                   decoration: const InputDecoration(
                     labelText: 'Aid Request / Situation Details *',
-                    hintText: 'Describe location, urgency, number of people affected, or medical aid needed…',
+                    hintText:
+                        'Describe location, urgency, number of people affected, or medical aid needed…',
                     alignLabelWithHint: true,
                   ),
                 ),
@@ -418,7 +472,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
           actions: [
             TextButton(
               onPressed: sending ? null : () => Navigator.of(ctx).pop(),
-              child: const Text('Cancel', style: TextStyle(color: Palette.textDim)),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Palette.textDim)),
             ),
             FilledButton.icon(
               style: FilledButton.styleFrom(minimumSize: const Size(130, 44)),
@@ -428,7 +483,9 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       final sender = senderCtrl.text.trim();
                       final msg = msgCtrl.text.trim();
                       if (sender.isEmpty || msg.isEmpty) {
-                        showSnack(context, 'Please enter your name and message.', error: true);
+                        showSnack(
+                            context, 'Please enter your name and message.',
+                            error: true);
                         return;
                       }
                       setDialogState(() => sending = true);
@@ -446,7 +503,9 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                           );
                         }
                       } catch (e) {
-                        if (mounted) showSnack(context, 'Failed to contact NGO: $e', error: true);
+                        if (mounted)
+                          showSnack(context, 'Failed to contact NGO: $e',
+                              error: true);
                       } finally {
                         if (ctx.mounted) setDialogState(() => sending = false);
                       }
@@ -455,7 +514,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF042F2A)),
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Color(0xFF042F2A)),
                     )
                   : const Icon(Icons.send_rounded, size: 18),
               label: Text(sending ? 'Sending…' : 'Send Request'),
@@ -484,7 +544,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
       if (!mounted) return;
       setState(() {
         _txnId = '${res['txnId'] ?? ''}';
-        _otpHintMessage = '${res['message'] ?? 'OTP sent to Aadhaar-linked mobile.'}';
+        _otpHintMessage =
+            '${res['message'] ?? 'OTP sent to Aadhaar-linked mobile.'}';
         _generatingOtp = false;
       });
       showSnack(context, 'Aadhaar OTP generated! Enter the 6-digit OTP below.');
@@ -540,16 +601,29 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
   }
 
   void _applyEmergencySummary(Map<String, dynamic> data) {
-    final bt = '${data['bloodType'] ?? 'O+'}';
-    final allergies = ((data['allergies'] as List?) ?? const []).map((e) => '$e').toList();
-    final conditions = ((data['conditions'] as List?) ?? const []).map((e) => '$e').toList();
-    final meds = ((data['currentMedications'] as List?) ?? const []).map((e) => '$e').toList();
+    final bt = '${data['bloodType'] ?? 'Not specified'}';
+    List<String> values(dynamic raw) => (raw is List
+            ? raw.map((item) => item.toString())
+            : raw is String
+                ? raw.split(',')
+                : const <String>[])
+        .map((item) => item.trim())
+        .where((item) =>
+            item.isNotEmpty &&
+            !item.toLowerCase().startsWith('none') &&
+            item.toLowerCase() != 'not provided' &&
+            item.toLowerCase() != 'unknown')
+        .toList();
+    final allergies = values(data['allergies']);
+    final conditions = values(data['conditions']);
+    final meds = values(data['currentMedications']);
     final rawContacts = (data['emergencyContacts'] as List?) ?? const [];
 
     setState(() {
       _uid = '${data['uid'] ?? ''}';
       _nameCtrl.text = '${data['name'] ?? ''}';
-      _profileBloodGroup = _bloodGroups.contains(bt) && bt != 'All' ? bt : 'O+';
+      _profileBloodGroup =
+          _bloodGroups.contains(bt) && bt != 'All' ? bt : 'Not specified';
       _dobCtrl.text = '${data['dob'] ?? ''}';
       _allergiesCtrl.text = allergies.join(', ');
       _conditionsCtrl.text = conditions.join(', ');
@@ -574,7 +648,7 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
     return input
         .split(',')
         .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
+        .where((s) => s.isNotEmpty && !s.toLowerCase().startsWith('none'))
         .toList();
   }
 
@@ -582,7 +656,9 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
     setState(() => _savingSummary = true);
     try {
       final body = <String, dynamic>{
-        'name': _nameCtrl.text.trim().isEmpty ? 'Jeevan User' : _nameCtrl.text.trim(),
+        'name': _nameCtrl.text.trim().isEmpty
+            ? ref.read(storeProvider).patientName
+            : _nameCtrl.text.trim(),
         'bloodType': _profileBloodGroup,
         'dob': _dobCtrl.text.trim(),
         'allergies': _splitCsv(_allergiesCtrl.text),
@@ -596,6 +672,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   'relationship': c['relationship'] ?? 'Family',
                 })
             .toList(),
+        'showEmergencyContacts':
+            ref.read(storeProvider).showEmergencyContactsOnQr,
       };
       final res = await ref.read(apiProvider).updateEmergencySummary(body);
       if (!mounted) return;
@@ -630,7 +708,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
         ),
         title: const Text(
           'Add Emergency Contact',
-          style: TextStyle(color: Palette.text, fontSize: 18, fontWeight: FontWeight.w700),
+          style: TextStyle(
+              color: Palette.text, fontSize: 18, fontWeight: FontWeight.w700),
         ),
         content: SingleChildScrollView(
           child: Column(
@@ -641,7 +720,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 style: const TextStyle(color: Palette.text),
                 decoration: const InputDecoration(
                   labelText: 'Contact Name *',
-                  prefixIcon: Icon(Icons.person_outline_rounded, color: Palette.teal),
+                  prefixIcon:
+                      Icon(Icons.person_outline_rounded, color: Palette.teal),
                 ),
               ),
               const SizedBox(height: 10),
@@ -680,7 +760,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel', style: TextStyle(color: Palette.textDim)),
+            child:
+                const Text('Cancel', style: TextStyle(color: Palette.textDim)),
           ),
           FilledButton(
             style: FilledButton.styleFrom(minimumSize: const Size(110, 42)),
@@ -688,7 +769,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
               final name = cName.text.trim();
               final phone = cPhone.text.trim();
               if (name.isEmpty || phone.isEmpty) {
-                showSnack(context, 'Enter contact name and phone number.', error: true);
+                showSnack(context, 'Enter contact name and phone number.',
+                    error: true);
                 return;
               }
               setState(() {
@@ -698,7 +780,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     'name': name,
                     'phone': phone,
                     'email': cEmail.text.trim(),
-                    'relationship': cRel.text.trim().isEmpty ? 'Family' : cRel.text.trim(),
+                    'relationship':
+                        cRel.text.trim().isEmpty ? 'Family' : cRel.text.trim(),
                   },
                 ];
               });
@@ -791,6 +874,190 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
   // ───────────────────────────────────────────────────────────────────────────
   // TAB 1: DISASTER & WEATHER RADAR
   // ───────────────────────────────────────────────────────────────────────────
+  double _tileWorldX(double lon, int zoom) =>
+      (lon + 180) / 360 * (1 << zoom) * 256;
+
+  double _tileWorldY(double lat, int zoom) {
+    final safeLat = lat.clamp(-85.05112878, 85.05112878);
+    final radians = safeLat * math.pi / 180;
+    return (1 - math.log(math.tan(radians) + 1 / math.cos(radians)) / math.pi) /
+        2 *
+        (1 << zoom) *
+        256;
+  }
+
+  void _panDisasterMap(Offset delta) {
+    if (delta.distance < 0.5) return;
+    final worldSize = (1 << _mapZoom) * 256.0;
+    final worldX = _tileWorldX(_mapCenterLng, _mapZoom) - delta.dx;
+    final worldY =
+        (_tileWorldY(_mapCenterLat, _mapZoom) - delta.dy).clamp(0.0, worldSize);
+    setState(() {
+      _mapCenterLng = worldX / worldSize * 360 - 180;
+      final n = math.pi * (1 - 2 * worldY / worldSize);
+      _mapCenterLat =
+          math.atan((math.exp(n) - math.exp(-n)) / 2) * 180 / math.pi;
+      _mapWasMoved = true;
+    });
+  }
+
+  Widget _disasterMapControl(IconData icon, VoidCallback onTap) => Material(
+        color: Colors.white,
+        elevation: 2,
+        borderRadius: BorderRadius.circular(9),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(9),
+          child: SizedBox(
+            width: 36,
+            height: 36,
+            child: Icon(icon, size: 19, color: Palette.text),
+          ),
+        ),
+      );
+
+  Widget _buildDisasterMap(String? weatherTileUrl) {
+    final zoom = _mapZoom;
+    const height = 230.0;
+    return SizedBox(
+      width: double.infinity,
+      height: height,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final centerX = width / 2;
+          final centerY = height / 2;
+          final worldX = _tileWorldX(_mapCenterLng, zoom);
+          final worldY = _tileWorldY(_mapCenterLat, zoom);
+          final centerTileX = (worldX / 256).floor();
+          final centerTileY = (worldY / 256).floor();
+          final fracX = worldX - centerTileX * 256;
+          final fracY = worldY - centerTileY * 256;
+          final tileCount = 1 << zoom;
+          final horizontalRadius = (width / 512).ceil();
+          final verticalRadius = (height / 512).ceil();
+          final tiles = <Widget>[];
+
+          for (var dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
+            for (var dy = -verticalRadius; dy <= verticalRadius; dy++) {
+              final x = (centerTileX + dx) % tileCount;
+              final y = centerTileY + dy;
+              if (y < 0 || y >= tileCount) continue;
+              final left = centerX + dx * 256 - fracX;
+              final top = centerY + dy * 256 - fracY;
+              final weatherUrl = weatherTileUrl
+                  ?.replaceAll('{z}', '$zoom')
+                  .replaceAll('{x}', '$x')
+                  .replaceAll('{y}', '$y');
+
+              tiles.add(Positioned(
+                left: left,
+                top: top,
+                width: 256,
+                height: 256,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    MapTileImage(zoom: zoom, x: x, y: y),
+                    if (weatherUrl != null)
+                      Opacity(
+                        opacity: 0.45,
+                        child: Image.network(
+                          weatherUrl,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        ),
+                      ),
+                  ],
+                ),
+              ));
+            }
+          }
+
+          final userX = centerX + _tileWorldX(_lng, zoom) - worldX;
+          final userY = centerY + _tileWorldY(_lat, zoom) - worldY;
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(14),
+            child: MapGestureLayer(
+              onPan: _panDisasterMap,
+              onZoom: (delta) =>
+                  setState(() => _mapZoom = (_mapZoom + delta).clamp(4, 19)),
+              child: Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
+                  const Positioned.fill(
+                      child: ColoredBox(color: Color(0xFFE8EDF0))),
+                  ...tiles,
+                  Positioned(
+                    left: userX - 7,
+                    top: userY - 7,
+                    child: Container(
+                      width: 14,
+                      height: 14,
+                      decoration: BoxDecoration(
+                        color: Palette.blue,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 2),
+                        boxShadow: const [
+                          BoxShadow(color: Colors.black26, blurRadius: 5)
+                        ],
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Column(children: [
+                      _disasterMapControl(
+                          Icons.add_rounded,
+                          () => setState(
+                              () => _mapZoom = (_mapZoom + 1).clamp(4, 19))),
+                      const SizedBox(height: 4),
+                      _disasterMapControl(
+                          Icons.remove_rounded,
+                          () => setState(
+                              () => _mapZoom = (_mapZoom - 1).clamp(4, 19))),
+                    ]),
+                  ),
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 7,
+                    child: Align(
+                      alignment: Alignment.bottomLeft,
+                      child: Tooltip(
+                        message:
+                            'Map: OpenStreetMap contributors. TomTom is the keyed fallback.',
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.88),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '© OpenStreetMap contributors • TomTom backup',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _buildDisasterSection() {
     final risk = _riskData;
     final radar = _radarData;
@@ -801,10 +1068,15 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
     final fireRisk = (risk?['fireRisk'] as num?)?.toInt() ?? 0;
     final earthquakeRisk = (risk?['earthquakeRisk'] as num?)?.toInt() ?? 10;
 
-    final weather = (risk?['weather'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
-    final tempC = weather['tempC'] ?? (radar?['current']?['main']?['temp']) ?? '--';
-    final humidity = weather['humidity'] ?? (radar?['current']?['main']?['humidity']) ?? '--';
-    final windMs = weather['windMs'] ?? (radar?['current']?['wind']?['speed']) ?? '--';
+    final weather = (risk?['weather'] as Map?)?.cast<String, dynamic>() ??
+        const <String, dynamic>{};
+    final tempC =
+        weather['tempC'] ?? (radar?['current']?['main']?['temp']) ?? '--';
+    final humidity = weather['humidity'] ??
+        (radar?['current']?['main']?['humidity']) ??
+        '--';
+    final windMs =
+        weather['windMs'] ?? (radar?['current']?['wind']?['speed']) ?? '--';
     final desc = '${weather['description'] ?? 'clear sky'}';
 
     final radarSource = '${radar?['source'] ?? 'simulated'}';
@@ -823,10 +1095,15 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 32),
         children: [
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: Palette.teal.withOpacity(0.12),
                   borderRadius: BorderRadius.circular(999),
@@ -835,7 +1112,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.my_location_rounded, color: Palette.teal, size: 14),
+                    const Icon(Icons.my_location_rounded,
+                        color: Palette.teal, size: 14),
                     const SizedBox(width: 6),
                     Text(
                       '${_lat.toStringAsFixed(4)}, ${_lng.toStringAsFixed(4)}',
@@ -849,28 +1127,32 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   ],
                 ),
               ),
-              const Spacer(),
               OutlinedButton.icon(
                 style: OutlinedButton.styleFrom(
                   foregroundColor: Palette.teal,
                   side: BorderSide(color: Palette.teal.withOpacity(0.45)),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
                 ),
-                onPressed: _loadingDisaster ? null : () => _loadDisasterAndWeather(tryGps: true),
+                onPressed: _loadingDisaster
+                    ? null
+                    : () => _loadDisasterAndWeather(tryGps: true),
                 icon: _loadingDisaster
                     ? const SizedBox(
                         width: 14,
                         height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Palette.teal),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Palette.teal),
                       )
                     : const Icon(Icons.gps_fixed_rounded, size: 16),
-                label: const Text('Update GPS Radar', style: TextStyle(fontSize: 12)),
+                label: const Text('Update GPS Radar',
+                    style: TextStyle(fontSize: 12)),
               ),
             ],
           ),
           const SizedBox(height: 14),
-
           if (_disasterError != null)
             EmptyState(
               Icons.cloud_off_rounded,
@@ -910,7 +1192,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                             value: (overallScore / 100.0).clamp(0.0, 1.0),
                             strokeWidth: 8,
                             backgroundColor: Palette.outline,
-                            valueColor: AlwaysStoppedAnimation<Color>(levelColor),
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(levelColor),
                           ),
                         ),
                         Column(
@@ -927,7 +1210,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                             ),
                             const Text(
                               '/ 100',
-                              style: TextStyle(color: Palette.textDim, fontSize: 10, fontFeatures: kTabular),
+                              style: TextStyle(
+                                  color: Palette.textDim,
+                                  fontSize: 10,
+                                  fontFeatures: kTabular),
                             ),
                           ],
                         ),
@@ -939,7 +1225,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             const Text(
                               'DISASTER RISK SCORE',
@@ -950,13 +1239,14 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                                 letterSpacing: 0.7,
                               ),
                             ),
-                            const Spacer(),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
                               decoration: BoxDecoration(
                                 color: levelColor.withOpacity(0.16),
                                 borderRadius: BorderRadius.circular(999),
-                                border: Border.all(color: levelColor.withOpacity(0.45)),
+                                border: Border.all(
+                                    color: levelColor.withOpacity(0.45)),
                               ),
                               child: Text(
                                 riskLevel.toUpperCase(),
@@ -987,13 +1277,21 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         const SizedBox(height: 6),
                         Text(
                           'Source: ${risk?['source'] ?? 'openweather'}',
-                          style: const TextStyle(color: Palette.textDim, fontSize: 11.5),
+                          style: const TextStyle(
+                              color: Palette.textDim, fontSize: 11.5),
                         ),
                       ],
                     ),
                   ),
                 ],
               ),
+            ),
+
+            const SizedBox(height: 16),
+            const SectionHeader('Disaster & Weather Map'),
+            GlassCard(
+              padding: const EdgeInsets.all(10),
+              child: _buildDisasterMap(tileUrl),
             ),
 
             const SizedBox(height: 16),
@@ -1046,7 +1344,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                           color: Palette.teal.withOpacity(0.14),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(Icons.wb_cloudy_rounded, color: Palette.teal, size: 22),
+                        child: const Icon(Icons.wb_cloudy_rounded,
+                            color: Palette.teal, size: 22),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -1065,7 +1364,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                             const SizedBox(height: 2),
                             Text(
                               'Area: ${radar?['current']?['name'] ?? 'Local Sector'}',
-                              style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                              style: const TextStyle(
+                                  color: Palette.textDim, fontSize: 12.5),
                             ),
                           ],
                         ),
@@ -1113,7 +1413,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
             const SectionHeader('Precipitation Radar Tile Status'),
             GlassCard(
               padding: const EdgeInsets.all(16),
-              borderColor: (tileUrl != null ? Palette.teal : Palette.amber).withOpacity(0.45),
+              borderColor: (tileUrl != null ? Palette.teal : Palette.amber)
+                  .withOpacity(0.45),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -1138,15 +1439,19 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
                         decoration: BoxDecoration(
-                          color: (tileUrl != null ? Palette.green : Palette.amber).withOpacity(0.15),
+                          color:
+                              (tileUrl != null ? Palette.green : Palette.amber)
+                                  .withOpacity(0.15),
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
                           radarSource.toUpperCase(),
                           style: TextStyle(
-                            color: tileUrl != null ? Palette.green : Palette.amber,
+                            color:
+                                tileUrl != null ? Palette.green : Palette.amber,
                             fontSize: 10,
                             fontWeight: FontWeight.w800,
                           ),
@@ -1196,7 +1501,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     color: Palette.red.withOpacity(0.18),
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  child: const Icon(Icons.bloodtype_rounded, color: Palette.red, size: 26),
+                  child: const Icon(Icons.bloodtype_rounded,
+                      color: Palette.red, size: 26),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -1205,7 +1511,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     children: [
                       Text(
                         'Community Blood Donor Network',
-                        style: TextStyle(color: Palette.text, fontSize: 15, fontWeight: FontWeight.w800),
+                        style: TextStyle(
+                            color: Palette.text,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800),
                       ),
                       SizedBox(height: 2),
                       Text(
@@ -1221,11 +1530,13 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     minimumSize: const Size(0, 42),
                     backgroundColor: Palette.red,
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                   ),
                   onPressed: _showRegisterDonorDialog,
                   icon: const Icon(Icons.add_rounded, size: 18),
-                  label: const Text('Become a Donor', style: TextStyle(fontSize: 13)),
+                  label: const Text('Become a Donor',
+                      style: TextStyle(fontSize: 13)),
                 ),
               ],
             ),
@@ -1247,10 +1558,14 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       selectedColor: Palette.red.withOpacity(0.22),
                       backgroundColor: Palette.surface,
                       side: BorderSide(
-                        color: _selectedBloodGroup == bg ? Palette.red : Palette.outline,
+                        color: _selectedBloodGroup == bg
+                            ? Palette.red
+                            : Palette.outline,
                       ),
                       labelStyle: TextStyle(
-                        color: _selectedBloodGroup == bg ? Palette.red : Palette.text,
+                        color: _selectedBloodGroup == bg
+                            ? Palette.red
+                            : Palette.text,
                         fontWeight: FontWeight.w800,
                         fontSize: 13,
                       ),
@@ -1277,14 +1592,16 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   style: const TextStyle(color: Palette.text, fontSize: 14),
                   decoration: InputDecoration(
                     hintText: 'Filter by city (e.g. Bangalore, Mumbai, Delhi)…',
-                    prefixIcon: const Icon(Icons.search_rounded, color: Palette.teal),
+                    prefixIcon:
+                        const Icon(Icons.search_rounded, color: Palette.teal),
                     suffixIcon: _citySearchCtrl.text.isNotEmpty
                         ? IconButton(
                             onPressed: () {
                               _citySearchCtrl.clear();
                               unawaited(_loadBloodDonors());
                             },
-                            icon: const Icon(Icons.clear_rounded, color: Palette.textDim, size: 18),
+                            icon: const Icon(Icons.clear_rounded,
+                                color: Palette.textDim, size: 18),
                           )
                         : null,
                   ),
@@ -1310,7 +1627,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Palette.teal),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Palette.teal),
                   )
                 : null,
           ),
@@ -1320,7 +1638,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
               Icons.error_outline_rounded,
               'Could Not Search Blood Bank',
               _donorsError!,
-              action: FilledButton(onPressed: _loadBloodDonors, child: const Text('Retry')),
+              action: FilledButton(
+                  onPressed: _loadBloodDonors, child: const Text('Retry')),
             )
           else if (!_loadingDonors && _donors.isEmpty)
             EmptyState(
@@ -1346,7 +1665,7 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
 
   Widget _buildDonorCard(Map<String, dynamic> d) {
     final name = '${d['name'] ?? 'Donor'}';
-    final bt = '${d['bloodType'] ?? 'O+'}';
+    final bt = '${d['bloodType'] ?? 'Not specified'}';
     final city = '${d['city'] ?? ''}';
     final phone = '${d['phone'] ?? ''}';
     final available = d['available'] == true;
@@ -1394,12 +1713,15 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: (available ? Palette.green : Palette.textDim).withOpacity(0.15),
+                        color: (available ? Palette.green : Palette.textDim)
+                            .withOpacity(0.15),
                         borderRadius: BorderRadius.circular(999),
                         border: Border.all(
-                          color: (available ? Palette.green : Palette.textDim).withOpacity(0.4),
+                          color: (available ? Palette.green : Palette.textDim)
+                              .withOpacity(0.4),
                         ),
                       ),
                       child: Text(
@@ -1417,7 +1739,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 const SizedBox(height: 4),
                 Text(
                   '$city • $units unit(s)${lastDonated.isNotEmpty ? ' • Last: $lastDonated' : ''}',
-                  style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                  style:
+                      const TextStyle(color: Palette.textDim, fontSize: 12.5),
                 ),
                 if (phone.isNotEmpty) ...[
                   const SizedBox(height: 4),
@@ -1442,7 +1765,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 backgroundColor: Palette.green.withOpacity(0.15),
               ),
               onPressed: () => launchUrl(Uri.parse('tel:$phone')),
-              icon: const Icon(Icons.call_rounded, color: Palette.green, size: 20),
+              icon: const Icon(Icons.call_rounded,
+                  color: Palette.green, size: 20),
             ),
           ],
         ],
@@ -1473,10 +1797,14 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       selectedColor: Palette.teal.withOpacity(0.20),
                       backgroundColor: Palette.surface,
                       side: BorderSide(
-                        color: _selectedNgoCategory == cat.$1 ? Palette.teal : Palette.outline,
+                        color: _selectedNgoCategory == cat.$1
+                            ? Palette.teal
+                            : Palette.outline,
                       ),
                       labelStyle: TextStyle(
-                        color: _selectedNgoCategory == cat.$1 ? Palette.teal : Palette.text,
+                        color: _selectedNgoCategory == cat.$1
+                            ? Palette.teal
+                            : Palette.text,
                         fontWeight: FontWeight.w700,
                         fontSize: 12.5,
                       ),
@@ -1491,24 +1819,24 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
             ),
           ),
           const SizedBox(height: 16),
-
           SectionHeader(
             'Verified Relief & Support NGOs (${_ngos.length})',
             action: _loadingNgos
                 ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Palette.teal),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Palette.teal),
                   )
                 : null,
           ),
-
           if (_ngosError != null)
             EmptyState(
               Icons.error_outline_rounded,
               'Could Not Load NGOs',
               _ngosError!,
-              action: FilledButton(onPressed: _loadNgos, child: const Text('Retry')),
+              action: FilledButton(
+                  onPressed: _loadNgos, child: const Text('Retry')),
             )
           else if (!_loadingNgos && _ngos.isEmpty)
             const EmptyState(
@@ -1551,7 +1879,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   color: Palette.teal.withOpacity(0.14),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(Icons.handshake_rounded, color: Palette.teal, size: 22),
+                child: const Icon(Icons.handshake_rounded,
+                    color: Palette.teal, size: 22),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -1572,16 +1901,19 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         ),
                         if (verified)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
                               color: Palette.green.withOpacity(0.14),
                               borderRadius: BorderRadius.circular(999),
-                              border: Border.all(color: Palette.green.withOpacity(0.4)),
+                              border: Border.all(
+                                  color: Palette.green.withOpacity(0.4)),
                             ),
                             child: const Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.verified_rounded, color: Palette.green, size: 12),
+                                Icon(Icons.verified_rounded,
+                                    color: Palette.green, size: 12),
                                 SizedBox(width: 4),
                                 Text(
                                   'VERIFIED',
@@ -1612,7 +1944,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         ),
                         Text(
                           '• $location',
-                          style: const TextStyle(color: Palette.textDim, fontSize: 12),
+                          style: const TextStyle(
+                              color: Palette.textDim, fontSize: 12),
                         ),
                       ],
                     ),
@@ -1625,7 +1958,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
             const SizedBox(height: 10),
             Text(
               desc,
-              style: const TextStyle(color: Palette.textDim, fontSize: 13, height: 1.4),
+              style: const TextStyle(
+                  color: Palette.textDim, fontSize: 13, height: 1.4),
             ),
           ],
           const SizedBox(height: 12),
@@ -1639,7 +1973,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.call_rounded, size: 14, color: Palette.green),
+                      const Icon(Icons.call_rounded,
+                          size: 14, color: Palette.green),
                       const SizedBox(width: 5),
                       Text(
                         phone,
@@ -1655,11 +1990,13 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 ),
               if (website.isNotEmpty)
                 InkWell(
-                  onTap: () => launchUrl(Uri.parse(website), mode: LaunchMode.externalApplication),
+                  onTap: () => launchUrl(Uri.parse(website),
+                      mode: LaunchMode.externalApplication),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.language_rounded, size: 14, color: Palette.blue),
+                      const Icon(Icons.language_rounded,
+                          size: 14, color: Palette.blue),
                       const SizedBox(width: 5),
                       Text(
                         website.replaceFirst(RegExp(r'^https?://'), ''),
@@ -1682,10 +2019,12 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 foregroundColor: Palette.teal,
                 side: BorderSide(color: Palette.teal.withOpacity(0.45)),
                 padding: const EdgeInsets.symmetric(vertical: 11),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
               ),
               onPressed: () => _showContactNgoDialog(ngo),
-              icon: const Icon(Icons.send_rounded, size: 16, color: Palette.teal),
+              icon:
+                  const Icon(Icons.send_rounded, size: 16, color: Palette.teal),
               label: const Text(
                 'Request Aid / Contact Coordinator',
                 style: TextStyle(fontWeight: FontWeight.w700),
@@ -1729,7 +2068,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         color: Palette.teal.withOpacity(0.18),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: const Icon(Icons.verified_user_rounded, color: Palette.teal, size: 22),
+                      child: const Icon(Icons.verified_user_rounded,
+                          color: Palette.teal, size: 22),
                     ),
                     const SizedBox(width: 10),
                     const Expanded(
@@ -1788,10 +2128,13 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     IconButton(
                       tooltip: 'Copy ABHA ID',
                       onPressed: () {
-                        unawaited(Clipboard.setData(ClipboardData(text: _abhaNumber!)));
-                        showSnack(context, 'ABHA Health ID copied to clipboard.');
+                        unawaited(Clipboard.setData(
+                            ClipboardData(text: _abhaNumber!)));
+                        showSnack(
+                            context, 'ABHA Health ID copied to clipboard.');
                       },
-                      icon: const Icon(Icons.copy_rounded, color: Palette.teal, size: 20),
+                      icon: const Icon(Icons.copy_rounded,
+                          color: Palette.teal, size: 20),
                     ),
                   ],
                 ),
@@ -1801,11 +2144,17 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   children: [
                     Text(
                       'Holder: ${_nameCtrl.text.trim().isEmpty ? 'Jeevan Patient' : _nameCtrl.text.trim()}',
-                      style: const TextStyle(color: Palette.text, fontSize: 13, fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                          color: Palette.text,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600),
                     ),
                     Text(
                       'Blood: $_profileBloodGroup',
-                      style: const TextStyle(color: Palette.teal, fontSize: 13, fontWeight: FontWeight.w800),
+                      style: const TextStyle(
+                          color: Palette.teal,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800),
                     ),
                   ],
                 ),
@@ -1823,12 +2172,16 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
             children: [
               const Text(
                 'Step 1: Enter 12-Digit Aadhaar Number',
-                style: TextStyle(color: Palette.text, fontSize: 15, fontWeight: FontWeight.w700),
+                style: TextStyle(
+                    color: Palette.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 6),
               const Text(
                 'Generates an ABDM sandbox OTP to link your Ayushman Bharat Digital Health Account (XX-XXXX-XXXX-XXXX) with Jeevan.',
-                style: TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.4),
+                style: TextStyle(
+                    color: Palette.textDim, fontSize: 12.5, height: 1.4),
               ),
               const SizedBox(height: 14),
               TextField(
@@ -1847,7 +2200,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   labelText: '12-Digit Aadhaar Number',
                   hintText: '123456789012',
                   counterText: '',
-                  prefixIcon: Icon(Icons.fingerprint_rounded, color: Palette.teal),
+                  prefixIcon:
+                      Icon(Icons.fingerprint_rounded, color: Palette.teal),
                 ),
               ),
               const SizedBox(height: 14),
@@ -1857,12 +2211,14 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF042F2A)),
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Color(0xFF042F2A)),
                       )
                     : const Icon(Icons.sms_rounded),
-                label: Text(_generatingOtp ? 'Requesting OTP…' : 'Generate Aadhaar OTP'),
+                label: Text(_generatingOtp
+                    ? 'Requesting OTP…'
+                    : 'Generate Aadhaar OTP'),
               ),
-
               if (_txnId != null) ...[
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 18),
@@ -1870,7 +2226,10 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 ),
                 const Text(
                   'Step 2: Verify 6-Digit OTP',
-                  style: TextStyle(color: Palette.text, fontSize: 15, fontWeight: FontWeight.w700),
+                  style: TextStyle(
+                      color: Palette.text,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 6),
                 if (_otpHintMessage != null)
@@ -1883,12 +2242,16 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline_rounded, color: Palette.blue, size: 18),
+                        const Icon(Icons.info_outline_rounded,
+                            color: Palette.blue, size: 18),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             _otpHintMessage!,
-                            style: const TextStyle(color: Palette.text, fontSize: 12, height: 1.35),
+                            style: const TextStyle(
+                                color: Palette.text,
+                                fontSize: 12,
+                                height: 1.35),
                           ),
                         ),
                       ],
@@ -1911,7 +2274,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                     labelText: '6-Digit OTP',
                     hintText: '123456',
                     counterText: '',
-                    prefixIcon: Icon(Icons.lock_clock_rounded, color: Palette.teal),
+                    prefixIcon:
+                        Icon(Icons.lock_clock_rounded, color: Palette.teal),
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -1921,10 +2285,13 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF042F2A)),
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Color(0xFF042F2A)),
                         )
                       : const Icon(Icons.verified_rounded),
-                  label: Text(_verifyingOtp ? 'Verifying…' : 'Verify OTP & Generate ABHA ID'),
+                  label: Text(_verifyingOtp
+                      ? 'Verifying…'
+                      : 'Verify OTP & Generate ABHA ID'),
                 ),
               ],
             ],
@@ -1939,7 +2306,9 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
   // ───────────────────────────────────────────────────────────────────────────
   Widget _buildEmergencyProfileSection() {
     final api = ref.read(apiProvider);
-    final publicPath = _uid.isNotEmpty ? '/api/emergency-summary/$_uid' : '/api/emergency-summary/{uid}';
+    final publicPath = _uid.isNotEmpty
+        ? '/api/emergency-summary/$_uid'
+        : '/api/emergency-summary/{uid}';
     final fullPublicUrl = '${api.baseUrl}$publicPath';
 
     return RefreshIndicator(
@@ -1971,9 +2340,11 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       decoration: BoxDecoration(
                         color: Palette.teal.withOpacity(0.16),
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Palette.teal.withOpacity(0.45)),
+                        border:
+                            Border.all(color: Palette.teal.withOpacity(0.45)),
                       ),
-                      child: const Icon(Icons.qr_code_2_rounded, color: Palette.teal, size: 32),
+                      child: const Icon(Icons.qr_code_2_rounded,
+                          color: Palette.teal, size: 32),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -2007,7 +2378,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 const SizedBox(height: 12),
                 const Text(
                   'Paramedics and ER physicians can open this endpoint without login to view your blood group, allergies, chronic conditions, and emergency contacts.',
-                  style: TextStyle(color: Palette.textDim, fontSize: 12.5, height: 1.35),
+                  style: TextStyle(
+                      color: Palette.textDim, fontSize: 12.5, height: 1.35),
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -2016,12 +2388,15 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Palette.teal,
-                          side: BorderSide(color: Palette.teal.withOpacity(0.45)),
+                          side:
+                              BorderSide(color: Palette.teal.withOpacity(0.45)),
                           padding: const EdgeInsets.symmetric(vertical: 11),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(13)),
                         ),
                         onPressed: () {
-                          unawaited(Clipboard.setData(ClipboardData(text: fullPublicUrl)));
+                          unawaited(Clipboard.setData(
+                              ClipboardData(text: fullPublicUrl)));
                           showSnack(context, 'Responder Emergency URL copied!');
                         },
                         icon: const Icon(Icons.copy_rounded, size: 16),
@@ -2033,13 +2408,16 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Palette.blue,
-                          side: BorderSide(color: Palette.blue.withOpacity(0.45)),
+                          side:
+                              BorderSide(color: Palette.blue.withOpacity(0.45)),
                           padding: const EdgeInsets.symmetric(vertical: 11),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(13)),
                         ),
                         onPressed: _uid.isEmpty
                             ? null
-                            : () => launchUrl(Uri.parse(fullPublicUrl), mode: LaunchMode.externalApplication),
+                            : () => launchUrl(Uri.parse(fullPublicUrl),
+                                mode: LaunchMode.externalApplication),
                         icon: const Icon(Icons.open_in_new_rounded, size: 16),
                         label: const Text('Open Public View'),
                       ),
@@ -2058,7 +2436,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Palette.teal),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Palette.teal),
                   )
                 : null,
           ),
@@ -2082,14 +2461,17 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                       child: DropdownButtonFormField<String>(
                         value: _profileBloodGroup,
                         dropdownColor: Palette.surfaceHi,
-                        style: const TextStyle(color: Palette.text, fontWeight: FontWeight.w700),
+                        style: const TextStyle(
+                            color: Palette.text, fontWeight: FontWeight.w700),
                         decoration: const InputDecoration(
                           labelText: 'Blood Group',
-                          prefixIcon: Icon(Icons.bloodtype_outlined, color: Palette.red),
+                          prefixIcon: Icon(Icons.bloodtype_outlined,
+                              color: Palette.red),
                         ),
                         items: _bloodGroups
                             .where((g) => g != 'All')
-                            .map((g) => DropdownMenuItem(value: g, child: Text(g)))
+                            .map((g) =>
+                                DropdownMenuItem(value: g, child: Text(g)))
                             .toList(),
                         onChanged: (v) {
                           if (v != null) setState(() => _profileBloodGroup = v);
@@ -2104,7 +2486,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         decoration: const InputDecoration(
                           labelText: 'Date of Birth',
                           hintText: 'YYYY-MM-DD',
-                          prefixIcon: Icon(Icons.cake_outlined, color: Palette.amber),
+                          prefixIcon:
+                              Icon(Icons.cake_outlined, color: Palette.amber),
                         ),
                       ),
                     ),
@@ -2117,7 +2500,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   decoration: const InputDecoration(
                     labelText: 'Allergies (comma-separated)',
                     hintText: 'Penicillin, Peanuts, Latex',
-                    prefixIcon: Icon(Icons.warning_amber_rounded, color: Palette.red),
+                    prefixIcon:
+                        Icon(Icons.warning_amber_rounded, color: Palette.red),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -2127,7 +2511,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   decoration: const InputDecoration(
                     labelText: 'Chronic Conditions (comma-separated)',
                     hintText: 'Hypertension, Type 2 Diabetes, Asthma',
-                    prefixIcon: Icon(Icons.monitor_heart_outlined, color: Palette.blue),
+                    prefixIcon:
+                        Icon(Icons.monitor_heart_outlined, color: Palette.blue),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -2137,7 +2522,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   decoration: const InputDecoration(
                     labelText: 'Current Medications (comma-separated)',
                     hintText: 'Metformin 500mg, Amlodipine 5mg',
-                    prefixIcon: Icon(Icons.medication_outlined, color: Palette.teal),
+                    prefixIcon:
+                        Icon(Icons.medication_outlined, color: Palette.teal),
                   ),
                 ),
               ],
@@ -2150,10 +2536,12 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
             'Emergency Contacts (${_contacts.length})',
             action: TextButton.icon(
               onPressed: _showAddContactDialog,
-              icon: const Icon(Icons.person_add_alt_1_rounded, size: 18, color: Palette.teal),
+              icon: const Icon(Icons.person_add_alt_1_rounded,
+                  size: 18, color: Palette.teal),
               label: const Text(
                 'Add Contact',
-                style: TextStyle(color: Palette.teal, fontWeight: FontWeight.w700),
+                style:
+                    TextStyle(color: Palette.teal, fontWeight: FontWeight.w700),
               ),
             ),
           ),
@@ -2163,7 +2551,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  const Icon(Icons.contact_phone_outlined, color: Palette.textDim),
+                  const Icon(Icons.contact_phone_outlined,
+                      color: Palette.textDim),
                   const SizedBox(width: 12),
                   const Expanded(
                     child: Text(
@@ -2173,7 +2562,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                   ),
                   IconButton(
                     onPressed: _showAddContactDialog,
-                    icon: const Icon(Icons.add_circle_outline_rounded, color: Palette.teal),
+                    icon: const Icon(Icons.add_circle_outline_rounded,
+                        color: Palette.teal),
                   ),
                 ],
               ),
@@ -2183,7 +2573,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: GlassCard(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   child: Row(
                     children: [
                       Container(
@@ -2193,7 +2584,8 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                           color: Palette.teal.withOpacity(0.14),
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(Icons.person_rounded, color: Palette.teal, size: 20),
+                        child: const Icon(Icons.person_rounded,
+                            color: Palette.teal, size: 20),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -2211,10 +2603,13 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                             const SizedBox(height: 2),
                             Text(
                               [
-                                if ((_contacts[i]['phone'] ?? '').isNotEmpty) _contacts[i]['phone']!,
-                                if ((_contacts[i]['email'] ?? '').isNotEmpty) _contacts[i]['email']!,
+                                if ((_contacts[i]['phone'] ?? '').isNotEmpty)
+                                  _contacts[i]['phone']!,
+                                if ((_contacts[i]['email'] ?? '').isNotEmpty)
+                                  _contacts[i]['email']!,
                               ].join(' • '),
-                              style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                              style: const TextStyle(
+                                  color: Palette.textDim, fontSize: 12.5),
                             ),
                           ],
                         ),
@@ -2223,11 +2618,14 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                         tooltip: 'Remove Contact',
                         onPressed: () {
                           setState(() {
-                            final next = List<Map<String, String>>.from(_contacts)..removeAt(i);
+                            final next =
+                                List<Map<String, String>>.from(_contacts)
+                                  ..removeAt(i);
                             _contacts = next;
                           });
                         },
-                        icon: const Icon(Icons.delete_outline_rounded, color: Palette.red, size: 20),
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            color: Palette.red, size: 20),
                       ),
                     ],
                   ),
@@ -2242,10 +2640,13 @@ class _CommunityDisasterScreenState extends ConsumerState<CommunityDisasterScree
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF042F2A)),
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Color(0xFF042F2A)),
                   )
                 : const Icon(Icons.save_rounded),
-            label: Text(_savingSummary ? 'Saving Profile…' : 'Save Emergency Medical ID'),
+            label: Text(_savingSummary
+                ? 'Saving Profile…'
+                : 'Save Emergency Medical ID'),
           ),
         ],
       ),
@@ -2279,7 +2680,10 @@ class _HazardMeterRow extends StatelessWidget {
             Expanded(
               child: Text(
                 label,
-                style: const TextStyle(color: Palette.text, fontSize: 13.5, fontWeight: FontWeight.w700),
+                style: const TextStyle(
+                    color: Palette.text,
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700),
               ),
             ),
             Text(

@@ -26,7 +26,7 @@ Rules:
 1. Ground every medical statement in the numbered CONTEXT passages and cite them like [1], [2]. If the context does not cover the question, say so plainly, then give only widely-accepted general guidance.
 2. Use the USER PROFILE and LIVE VITALS when relevant (allergies, conditions, medications, current readings). Never invent values.
 3. For anything life-threatening, FIRST line: tell the user to call their local emergency number / press the SOS button, then give the immediate steps.
-4. Be concise: short sentences, numbered steps for procedures. No diagnosis certainty; you support, you do not replace a clinician.
+4. Answer the question fully. Use clear sections and numbered steps for procedures; do not stop mid-instruction. No diagnosis certainty; you support, you do not replace a clinician.
 5. Reply in the user's language."""
 
 
@@ -60,37 +60,55 @@ def extractive_answer(hits: list[Hit], emergency: bool) -> str:
 
 
 async def stream_gemini(
-    settings: Settings, client: httpx.AsyncClient, prompt: str, history: list[dict[str, str]]
+    settings: Settings,
+    client: httpx.AsyncClient,
+    prompt: str,
+    history: list[dict[str, str]],
+    *,
+    system_instruction: Optional[str] = None,
+    max_output_tokens: int = 3000,
 ) -> AsyncIterator[str]:
     contents: list[dict[str, Any]] = []
     for turn in history[-8:]:
         role = "user" if turn.get("role") == "user" else "model"
         contents.append({"role": role, "parts": [{"text": str(turn.get("content", ""))[:2000]}]})
     contents.append({"role": "user", "parts": [{"text": prompt}]})
-    body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-        "contents": contents,
-        "generationConfig": {"temperature": 0.2, "topP": 0.9, "maxOutputTokens": 900},
-    }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:streamGenerateContent?alt=sse"
-    async with client.stream(
-        "POST", url, json=body, headers={"x-goog-api-key": settings.gemini_api_key}, timeout=settings.llm_timeout_s
-    ) as resp:
-        if resp.status_code >= 400:
-            detail = (await resp.aread()).decode(errors="ignore")[:200]
-            raise RuntimeError(f"Gemini HTTP {resp.status_code}: {detail}")
-        async for line in resp.aiter_lines():
-            if not line.startswith("data:"):
-                continue
-            payload = line[5:].strip()
-            if not payload or payload == "[DONE]":
-                continue
-            try:
-                data = json.loads(payload)
-            except ValueError:
-                continue
-            for cand in data.get("candidates", []):
-                for part in cand.get("content", {}).get("parts", []):
-                    text = part.get("text")
-                    if text:
-                        yield text
+    complete_answer = ""
+    for attempt in range(3):
+        body = {
+            "systemInstruction": {"parts": [{"text": system_instruction or SYSTEM_PROMPT}]},
+            "contents": contents,
+            "generationConfig": {"temperature": 0.2, "topP": 0.9, "maxOutputTokens": max_output_tokens},
+        }
+        finish_reason = ""
+        async with client.stream(
+            "POST", url, json=body, headers={"x-goog-api-key": settings.gemini_api_key}, timeout=settings.llm_timeout_s
+        ) as resp:
+            if resp.status_code >= 400:
+                detail = (await resp.aread()).decode(errors="ignore")[:200]
+                raise RuntimeError(f"Gemini HTTP {resp.status_code}: {detail}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    data = json.loads(payload)
+                except ValueError:
+                    continue
+                for cand in data.get("candidates", []):
+                    finish_reason = str(cand.get("finishReason") or finish_reason)
+                    for part in cand.get("content", {}).get("parts", []):
+                        text = part.get("text")
+                        if text:
+                            complete_answer += text
+                            yield text
+        if finish_reason != "MAX_TOKENS" or attempt == 2:
+            break
+        # Continue only when Gemini explicitly reports a token-limit cutoff.
+        contents.extend([
+            {"role": "model", "parts": [{"text": complete_answer}]},
+            {"role": "user", "parts": [{"text": "Continue from the exact point where the answer stopped. Do not repeat earlier content; finish the response completely."}]},
+        ])

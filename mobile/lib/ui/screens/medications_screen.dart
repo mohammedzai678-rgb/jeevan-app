@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/theme.dart';
+import '../../data/medication_reminder_service.dart';
 import '../../state/providers.dart';
 import '../widgets/common.dart';
 
@@ -37,6 +39,11 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
         _medications = list;
         _loading = false;
       });
+      try {
+        await MedicationReminderService.sync(list);
+      } catch (_) {
+        // Keep the medication list usable when notifications are unavailable.
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _loading = false);
@@ -49,10 +56,14 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
     final name = (med['name'] as String?)?.trim().isNotEmpty == true
         ? med['name'] as String
         : 'Scheduled Dose';
-    final times = (med['reminderTimes'] as List?)?.whereType<String>().toList() ?? const ['08:00'];
+    final times =
+        (med['reminderTimes'] as List?)?.whereType<String>().toList() ??
+            const ['08:00'];
     final slot = times.isNotEmpty ? times.first : '08:00';
 
     setState(() => _ringingMedId = id);
+    await SystemSound.play(SystemSoundType.alert);
+    await HapticFeedback.mediumImpact();
     try {
       await ref.read(apiProvider).triggerReminder(deviceId, name, slot);
       await ref.read(devicesProvider.notifier).refresh();
@@ -64,7 +75,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
       }
     } catch (e) {
       if (mounted) {
-        showSnack(context, 'Could not trigger VitaWatch reminder: $e', error: true);
+        showSnack(context, 'Could not trigger VitaWatch reminder: $e',
+            error: true);
       }
     } finally {
       if (mounted) setState(() => _ringingMedId = null);
@@ -81,6 +93,9 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
       setState(() {
         _medications = _medications.where((m) => '${m['id']}' != id).toList();
       });
+      try {
+        await MedicationReminderService.sync(_medications);
+      } catch (_) {}
       showSnack(context, 'Removed ${med['name'] ?? 'medication'}.');
     } catch (e) {
       if (mounted) {
@@ -95,7 +110,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
     final id = '${med['id'] ?? med['name']}';
     final name = (med['name'] as String?) ?? 'Medication';
     final dosage = (med['dosage'] as String?) ?? '';
-    final times = (med['reminderTimes'] as List?)?.map((e) => '$e').toList() ?? const ['08:00'];
+    final times = (med['reminderTimes'] as List?)?.map((e) => '$e').toList() ??
+        const ['08:00'];
     final slot = times.isNotEmpty ? times.first : '08:00';
 
     setState(() => _advisingMedId = id);
@@ -107,9 +123,15 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
             missedBy: '2 hours',
           );
       if (!mounted) return;
-      final adviceText = '${res['advice'] ?? res['recommendation'] ?? res['response'] ?? 'Take the missed dose as soon as you remember unless it is nearly time for your next scheduled dose. Do not double the dose.'}'.trim();
-      final actionLabel = '${res['action'] ?? 'CLINICAL PHARMACIST GUIDANCE'}'.toUpperCase();
-      final warnings = ((res['warnings'] ?? res['precautions']) as List?)?.map((e) => '$e').toList() ?? const [];
+      final adviceText =
+          '${res['advice'] ?? res['recommendation'] ?? res['response'] ?? 'Take the missed dose as soon as you remember unless it is nearly time for your next scheduled dose. Do not double the dose.'}'
+              .trim();
+      final actionLabel =
+          '${res['action'] ?? 'CLINICAL PHARMACIST GUIDANCE'}'.toUpperCase();
+      final warnings = ((res['warnings'] ?? res['precautions']) as List?)
+              ?.map((e) => '$e')
+              .toList() ??
+          const [];
 
       await showModalBottomSheet<void>(
         context: context,
@@ -131,7 +153,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                       color: Palette.teal.withValues(alpha: 0.16),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(Icons.medical_information_rounded, color: Palette.teal, size: 22),
+                    child: const Icon(Icons.medical_information_rounded,
+                        color: Palette.teal, size: 22),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -140,18 +163,25 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                       children: [
                         Text(
                           'AI Pharmacist • $name ($dosage)',
-                          style: const TextStyle(color: Palette.text, fontSize: 16, fontWeight: FontWeight.w800),
+                          style: const TextStyle(
+                              color: Palette.text,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800),
                         ),
                         Text(
                           'Scheduled slot: $slot • $actionLabel',
-                          style: const TextStyle(color: Palette.teal, fontSize: 12, fontWeight: FontWeight.w700),
+                          style: const TextStyle(
+                              color: Palette.teal,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700),
                         ),
                       ],
                     ),
                   ),
                   IconButton(
                     onPressed: () => Navigator.of(ctx).pop(),
-                    icon: const Icon(Icons.close_rounded, color: Palette.textDim),
+                    icon:
+                        const Icon(Icons.close_rounded, color: Palette.textDim),
                   ),
                 ],
               ),
@@ -162,11 +192,13 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                 decoration: BoxDecoration(
                   color: Palette.surfaceHi,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: Palette.teal.withValues(alpha: 0.35)),
+                  border:
+                      Border.all(color: Palette.teal.withValues(alpha: 0.35)),
                 ),
                 child: Text(
                   adviceText,
-                  style: const TextStyle(color: Palette.text, fontSize: 13.8, height: 1.45),
+                  style: const TextStyle(
+                      color: Palette.text, fontSize: 13.8, height: 1.45),
                 ),
               ),
               if (warnings.isNotEmpty) ...[
@@ -177,12 +209,14 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(Icons.warning_amber_rounded, size: 15, color: Palette.amber),
+                        const Icon(Icons.warning_amber_rounded,
+                            size: 15, color: Palette.amber),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
                             w,
-                            style: const TextStyle(color: Palette.textDim, fontSize: 12.5),
+                            style: const TextStyle(
+                                color: Palette.textDim, fontSize: 12.5),
                           ),
                         ),
                       ],
@@ -194,7 +228,9 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
         ),
       );
     } catch (e) {
-      if (mounted) showSnack(context, 'Could not fetch pharmacist advice: $e', error: true);
+      if (mounted)
+        showSnack(context, 'Could not fetch pharmacist advice: $e',
+            error: true);
     } finally {
       if (mounted) setState(() => _advisingMedId = null);
     }
@@ -204,7 +240,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
     final id = '${med['id'] ?? med['name']}';
     final name = (med['name'] as String?) ?? 'Medication';
     final dosage = (med['dosage'] as String?) ?? '';
-    final times = (med['reminderTimes'] as List?)?.map((e) => '$e').toList() ?? const ['08:00'];
+    final times = (med['reminderTimes'] as List?)?.map((e) => '$e').toList() ??
+        const ['08:00'];
     final slot = times.isNotEmpty ? times.first : '08:00';
 
     final phoneCtrl = TextEditingController(text: '+919876543210');
@@ -261,7 +298,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('Cancel', style: TextStyle(color: Palette.textDim)),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Palette.textDim)),
             ),
             FilledButton.icon(
               style: FilledButton.styleFrom(
@@ -341,9 +379,10 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
   @override
   Widget build(BuildContext context) {
     final devicesState = ref.watch(devicesProvider);
-    final activeDeviceId = (devicesState.selected != null && devicesState.selected!.isNotEmpty)
-        ? devicesState.selected!
-        : 'esp32_jeevancare_01';
+    final activeDeviceId =
+        (devicesState.selected != null && devicesState.selected!.isNotEmpty)
+            ? devicesState.selected!
+            : 'esp32_jeevancare_01';
 
     final canPop = Navigator.of(context).canPop();
 
@@ -406,7 +445,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                         ),
                         Text(
                           '7-Day Adherence • VitaWatch LED • AI Pharmacist',
-                          style: TextStyle(color: Palette.textDim, fontSize: 12.5),
+                          style:
+                              TextStyle(color: Palette.textDim, fontSize: 12.5),
                         ),
                       ],
                     ),
@@ -414,7 +454,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                   IconButton(
                     tooltip: 'Refresh Medications',
                     onPressed: _loading ? null : _loadMedications,
-                    icon: const Icon(Icons.refresh_rounded, color: Palette.text),
+                    icon:
+                        const Icon(Icons.refresh_rounded, color: Palette.text),
                   ),
                 ],
               ),
@@ -438,13 +479,16 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                         ),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 3),
                         decoration: BoxDecoration(
                           color: Palette.redLight,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
-                          _medications.isEmpty ? '0% Adherence' : '100% Adherence',
+                          _medications.isEmpty
+                              ? '0% Adherence'
+                              : '100% Adherence',
                           style: const TextStyle(
                             color: Palette.red,
                             fontSize: 11.5,
@@ -458,7 +502,15 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      for (final day in const ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+                      for (final day in const [
+                        'Sun',
+                        'Mon',
+                        'Tue',
+                        'Wed',
+                        'Thu',
+                        'Fri',
+                        'Sat'
+                      ])
                         Column(
                           children: [
                             Text(
@@ -474,17 +526,23 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                               width: 34,
                               height: 34,
                               decoration: BoxDecoration(
-                                color: day == 'Sun' ? Palette.red : Palette.surfaceHi,
+                                color: day == 'Sun'
+                                    ? Palette.red
+                                    : Palette.surfaceHi,
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                  color: day == 'Sun' ? Palette.red : Palette.outline,
+                                  color: day == 'Sun'
+                                      ? Palette.red
+                                      : Palette.outline,
                                 ),
                               ),
                               alignment: Alignment.center,
                               child: Icon(
                                 Icons.check_rounded,
                                 size: 16,
-                                color: day == 'Sun' ? Colors.white : Palette.textMuted,
+                                color: day == 'Sun'
+                                    ? Colors.white
+                                    : Palette.textMuted,
                               ),
                             ),
                           ],
@@ -578,7 +636,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                 final dosage = (med['dosage'] as String?) ?? '';
                 final frequency = (med['frequency'] as String?) ?? 'Once daily';
                 final doctorName = (med['doctorName'] as String?)?.trim();
-                final adherence = (med['adherenceScore'] as num?)?.toInt() ?? 100;
+                final adherence =
+                    (med['adherenceScore'] as num?)?.toInt() ?? 100;
                 final times = (med['reminderTimes'] as List?)
                         ?.map((e) => '$e')
                         .where((s) => s.isNotEmpty)
@@ -641,10 +700,13 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                                           vertical: 4,
                                         ),
                                         decoration: BoxDecoration(
-                                          color: adherenceColor.withValues(alpha: 0.15),
-                                          borderRadius: BorderRadius.circular(999),
+                                          color: adherenceColor.withValues(
+                                              alpha: 0.15),
+                                          borderRadius:
+                                              BorderRadius.circular(999),
                                           border: Border.all(
-                                            color: adherenceColor.withValues(alpha: 0.45),
+                                            color: adherenceColor.withValues(
+                                                alpha: 0.45),
                                           ),
                                         ),
                                         child: Text(
@@ -668,7 +730,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                  if (doctorName != null && doctorName.isNotEmpty) ...[
+                                  if (doctorName != null &&
+                                      doctorName.isNotEmpty) ...[
                                     const SizedBox(height: 3),
                                     Text(
                                       'Prescribed by Dr. ${doctorName.replaceFirst(RegExp(r'^[Dd]r\.?\s*'), '')}',
@@ -683,7 +746,9 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                             ),
                             IconButton(
                               tooltip: 'Delete Medication',
-                              onPressed: isDeleting ? null : () => _deleteMedication(med),
+                              onPressed: isDeleting
+                                  ? null
+                                  : () => _deleteMedication(med),
                               icon: isDeleting
                                   ? const SizedBox(
                                       width: 18,
@@ -750,11 +815,14 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                           child: FilledButton.tonalIcon(
                             style: FilledButton.styleFrom(
                               minimumSize: const Size.fromHeight(46),
-                              backgroundColor: Palette.amber.withValues(alpha: 0.16),
+                              backgroundColor:
+                                  Palette.amber.withValues(alpha: 0.16),
                               foregroundColor: Palette.amber,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(14),
-                                side: BorderSide(color: Palette.amber.withValues(alpha: 0.45)),
+                                side: BorderSide(
+                                    color:
+                                        Palette.amber.withValues(alpha: 0.45)),
                               ),
                             ),
                             onPressed: isRinging
@@ -769,7 +837,8 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                                       color: Palette.amber,
                                     ),
                                   )
-                                : const Icon(Icons.lightbulb_circle_rounded, size: 20),
+                                : const Icon(Icons.lightbulb_circle_rounded,
+                                    size: 20),
                             label: Text(
                               isRinging
                                   ? 'Ringing VitaWatch LED…'
@@ -789,13 +858,18 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                               child: OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Palette.teal,
-                                  side: BorderSide(color: Palette.teal.withValues(alpha: 0.45)),
-                                  padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 10),
+                                  side: BorderSide(
+                                      color:
+                                          Palette.teal.withValues(alpha: 0.45)),
+                                  padding: const EdgeInsets.symmetric(
+                                      vertical: 11, horizontal: 10),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                 ),
-                                onPressed: isAdvising ? null : () => _askAiPharmacistMissedDose(med),
+                                onPressed: isAdvising
+                                    ? null
+                                    : () => _askAiPharmacistMissedDose(med),
                                 icon: isAdvising
                                     ? const SizedBox(
                                         width: 15,
@@ -805,10 +879,13 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                                           color: Palette.teal,
                                         ),
                                       )
-                                    : const Icon(Icons.psychology_alt_rounded, size: 17, color: Palette.teal),
+                                    : const Icon(Icons.psychology_alt_rounded,
+                                        size: 17, color: Palette.teal),
                                 label: const Text(
                                   'Missed Dose? Ask AI Pharmacist',
-                                  style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                                  style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -819,13 +896,18 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                               child: OutlinedButton.icon(
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: Palette.green,
-                                  side: BorderSide(color: Palette.green.withValues(alpha: 0.45)),
-                                  padding: const EdgeInsets.symmetric(vertical: 11, horizontal: 10),
+                                  side: BorderSide(
+                                      color: Palette.green
+                                          .withValues(alpha: 0.45)),
+                                  padding: const EdgeInsets.symmetric(
+                                      vertical: 11, horizontal: 10),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                 ),
-                                onPressed: isNotifying ? null : () => _notifyCaregiverWhatsApp(med),
+                                onPressed: isNotifying
+                                    ? null
+                                    : () => _notifyCaregiverWhatsApp(med),
                                 icon: isNotifying
                                     ? const SizedBox(
                                         width: 15,
@@ -835,10 +917,13 @@ class _MedicationsScreenState extends ConsumerState<MedicationsScreen> {
                                           color: Palette.green,
                                         ),
                                       )
-                                    : const Icon(Icons.chat_rounded, size: 16, color: Palette.green),
+                                    : const Icon(Icons.chat_rounded,
+                                        size: 16, color: Palette.green),
                                 label: const Text(
                                   'Notify Caregiver on WhatsApp',
-                                  style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700),
+                                  style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w700),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
@@ -903,7 +988,8 @@ class _AddMedicationSheetState extends State<_AddMedicationSheet> {
     final name = _nameCtrl.text.trim();
     final dosage = _dosageCtrl.text.trim();
     if (name.isEmpty || dosage.isEmpty) {
-      showSnack(context, 'Please enter both medication name and dosage.', error: true);
+      showSnack(context, 'Please enter both medication name and dosage.',
+          error: true);
       return;
     }
     final reminderTimes = _timesCtrl.text
@@ -922,7 +1008,8 @@ class _AddMedicationSheetState extends State<_AddMedicationSheet> {
         dosage: dosage,
         frequency: _frequency,
         reminderTimes: reminderTimes,
-        doctorName: _doctorCtrl.text.trim().isEmpty ? null : _doctorCtrl.text.trim(),
+        doctorName:
+            _doctorCtrl.text.trim().isEmpty ? null : _doctorCtrl.text.trim(),
       );
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
@@ -952,7 +1039,8 @@ class _AddMedicationSheetState extends State<_AddMedicationSheet> {
                     color: Palette.teal.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(11),
                   ),
-                  child: const Icon(Icons.medication_rounded, color: Palette.teal, size: 22),
+                  child: const Icon(Icons.medication_rounded,
+                      color: Palette.teal, size: 22),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -966,7 +1054,8 @@ class _AddMedicationSheetState extends State<_AddMedicationSheet> {
                   ),
                 ),
                 IconButton(
-                  onPressed: _saving ? null : () => Navigator.of(context).pop(false),
+                  onPressed:
+                      _saving ? null : () => Navigator.of(context).pop(false),
                   icon: const Icon(Icons.close_rounded, color: Palette.textDim),
                 ),
               ],

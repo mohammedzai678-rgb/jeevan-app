@@ -30,14 +30,17 @@ create policy "sos_events_service_access" on public.sos_events
 create table if not exists public.emergency_summaries (
   uid text primary key,
   name text not null default 'Jeevan User',
-  "bloodType" text default 'O+',
+  "bloodType" text default 'Not specified',
   dob text default '',
   allergies jsonb default '[]'::jsonb,
   conditions jsonb default '[]'::jsonb,
   "currentMedications" jsonb default '[]'::jsonb,
   "emergencyContacts" jsonb default '[]'::jsonb,
+  "showEmergencyContacts" boolean not null default true,
   "updatedAt" timestamptz default now()
 );
+alter table public.emergency_summaries alter column "bloodType" set default 'Not specified';
+alter table public.emergency_summaries add column if not exists "showEmergencyContacts" boolean not null default true;
 alter table public.emergency_summaries enable row level security;
 drop policy if exists "emergency_summaries_service_access" on public.emergency_summaries;
 create policy "emergency_summaries_service_access" on public.emergency_summaries

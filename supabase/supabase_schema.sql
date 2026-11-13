@@ -178,16 +178,16 @@ create policy "device pairings owner select" on public.device_pairings
 -- 10. STORAGE BUCKET FOR HEALTH VAULT FILES
 insert into storage.buckets (id, name, public)
 values ('health-vault', 'health-vault', true)
-on conflict (id) do nothing;
+on conflict (id) do update set public = false;
 
 drop policy if exists "health_vault_storage_read" on storage.objects;
 create policy "health_vault_storage_read" on storage.objects
-  for select using (bucket_id = 'health-vault');
+  for select using (bucket_id = 'health-vault' and (storage.foldername(name))[1] = auth.uid()::text);
 
 drop policy if exists "health_vault_storage_write" on storage.objects;
 create policy "health_vault_storage_write" on storage.objects
-  for all using (bucket_id = 'health-vault')
-  with check (bucket_id = 'health-vault');
+  for all using (bucket_id = 'health-vault' and (storage.foldername(name))[1] = auth.uid()::text)
+  with check (bucket_id = 'health-vault' and (storage.foldername(name))[1] = auth.uid()::text);
 
 -- 10. REALTIME PUBLICATIONS FOR MOBILE SYNC
 do $$
